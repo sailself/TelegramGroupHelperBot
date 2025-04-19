@@ -1,0 +1,46 @@
+[tool.poetry]
+name = "TelegramGroupHelperBot"
+version = "0.1.0"
+description = "Telegram bot with Gemini AI integration for summaries, fact checking, and Q&A"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+packages = [{include = "bot"}]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+python-telegram-bot = "^21.0"
+asyncio = "^3.4.3"
+sqlalchemy = "^2.0.26"
+alembic = "^1.12.1"
+langdetect = "^1.0.9"
+google-generativeai = "^0.5.4"
+python-dotenv = "^1.0.0"
+asyncpg = "^0.29.0"
+aiosqlite = "^0.19.0"
+
+[tool.poetry.group.dev.dependencies]
+ruff = "^0.1.6"
+mypy = "^1.7.0"
+pytest = "^7.4.3"
+pytest-asyncio = "^0.21.1"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+select = ["E", "F", "B", "I"]
+line-length = 100
+target-version = "py311"
+fix = true
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_optional = true 
