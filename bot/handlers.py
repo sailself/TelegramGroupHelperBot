@@ -68,10 +68,23 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Detect language
     language, _ = langid.classify(text)
     
+    # Get the proper user display name
+    if message.from_user:
+        if message.from_user.username:
+            username = message.from_user.username
+        elif message.from_user.first_name and message.from_user.last_name:
+            username = f"{message.from_user.first_name} {message.from_user.last_name}"
+        elif message.from_user.first_name:
+            username = message.from_user.first_name
+        else:
+            username = "Anonymous"
+    else:
+        username = "Anonymous"
+    
     # Queue message for insertion
     await queue_message_insert(
         user_id=message.from_user.id if message.from_user else 0,
-        username=message.from_user.username if message.from_user else "",
+        username=username,
         text=text,
         language=language,
         date=message.date,
@@ -131,7 +144,8 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         formatted_messages = "Recent conversation:\n\n"
         for msg in messages:
             timestamp = msg.date.strftime("%Y-%m-%d %H:%M:%S")
-            username = msg.username or "Anonymous"
+            # Use the username if available, otherwise use "Anonymous" as fallback
+            username = msg.username if msg.username and msg.username.strip() else "Anonymous"
             formatted_messages += f"{timestamp} - {username}: {msg.text}\n\n"
         
         # Use the configured system prompt
@@ -198,22 +212,9 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "Cannot fact-check an empty message."
         )
         return
-    
-    # Detect language
+        
+    # Detect the language of the message
     language, _ = langid.classify(message_to_check)
-    
-    # Log the message being fact-checked
-    if update.effective_message.reply_to_message.from_user:
-        await queue_message_insert(
-            user_id=update.effective_message.reply_to_message.from_user.id,
-            username=update.effective_message.reply_to_message.from_user.username or "",
-            text=message_to_check,
-            language=language,
-            date=update.effective_message.reply_to_message.date,
-            reply_to_message_id=None,
-            chat_id=update.effective_chat.id,
-            message_id=update.effective_message.reply_to_message.message_id
-        )
     
     # Send a "processing" message
     processing_message = await update.effective_message.reply_text(
@@ -221,31 +222,62 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     )
     
     try:
-        # Use streaming for fact-checking to update the user in real-time
+        # Format the system prompt with the current date
+        current_date = datetime.now().strftime("%B %d, %Y")
+        system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_date=current_date)
+        
+        # Get response from Gemini with fact checking, using the detected language
         response_queue = await stream_gemini(
-            system_prompt=FACTCHECK_SYSTEM_PROMPT,
-            user_content=message_to_check
+            system_prompt=system_prompt,
+            user_content=message_to_check,
+            response_language=language  # Pass the detected language
+        )
+        
+        # Process the streamed response
+        full_response = ""
+        
+        # Initialize the message
+        await processing_message.edit_text(
+            "Checking facts...", 
+            parse_mode=None
         )
         
         # Process chunks from the queue
         while True:
             chunk = await response_queue.get()
-            if chunk is None:  # End of stream
+            
+            if chunk is None:
+                # End of stream
                 break
                 
+            full_response = chunk
+            
+            # Update the message periodically (not on every chunk to avoid rate limits)
+            # Only update if we have a substantial amount of new content
+            if len(full_response) % 50 == 0:
+                try:
+                    await processing_message.edit_text(
+                        full_response,
+                        parse_mode=None
+                    )
+                except Exception as e:
+                    logger.warning(f"Error updating streaming message: {e}")
+        
+        # Final update with complete response
+        if full_response:
             try:
                 await processing_message.edit_text(
-                    chunk,
+                    full_response,
                     parse_mode=ParseMode.MARKDOWN
                 )
-            except Exception as e:
-                # If we can't update with markdown, try without it
-                try:
-                    await processing_message.edit_text(chunk)
-                except Exception as inner_e:
-                    logger.error(f"Error updating fact-check response: {inner_e}")
-                    # If we still can't update, stop streaming
-                    break
+            except Exception:
+                # If Markdown parsing fails, send as plain text
+                await processing_message.edit_text(full_response)
+        else:
+            await processing_message.edit_text(
+                "Failed to fact-check the message. Please try again later."
+            )
+    
     except Exception as e:
         logger.error(f"Error in factcheck_handler: {e}")
         try:
@@ -306,9 +338,13 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             message_id=update.effective_message.message_id
         )
         
+        # Format the system prompt with the current date
+        current_date = datetime.now().strftime("%B %d, %Y")
+        system_prompt = Q_SYSTEM_PROMPT.format(current_date=current_date)
+        
         # Get response from Gemini
         response = await call_gemini(
-            system_prompt=Q_SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             user_content=query
         )
         
