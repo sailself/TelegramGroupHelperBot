@@ -38,7 +38,7 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "15"))
 
 # Prompt for a short summary
-TLDR_SYSTEM_PROMPT = "你是一个中文助手，请用中文总结以下群聊内容，请列出主要发言用户的名字和观点。限制在 200 字以内。"
+TLDR_SYSTEM_PROMPT = "你是一个中文助手，请用中文总结以下群聊内容，请列出主要发言用户的名字和观点。限制在 400 字以内。"
 
 # Prompt for fact checking
 FACTCHECK_SYSTEM_PROMPT = """You are an expert fact-checker that is unbiased, honest, and direct. \
