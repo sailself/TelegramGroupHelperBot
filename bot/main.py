@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import signal
 import sys
 from typing import NoReturn
 
@@ -13,71 +14,46 @@ from telegram.ext import (
     filters,
 )
 
-from bot import BOT_TOKEN, ENV, WEBHOOK_PORT, WEBHOOK_URL
-from bot.db import db_writer, init_db
-from bot.handlers import factcheck_handler, log_message, q_handler, tldr_handler
+from bot.config import (
+    BOT_TOKEN,
+    USE_WEBHOOK,
+    WEBHOOK_PORT,
+    WEBHOOK_URL,
+)
+from bot.db.database import init_db
+from bot.handlers import (
+    factcheck_handler,
+    help_handler,
+    log_message,
+    q_handler,
+    start_handler,
+    tldr_handler,
+)
 
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
+# Set DEBUG level for bot handlers to trace issues
+logging.getLogger('bot.handlers').setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
-async def start(application: Application) -> None:
-    """Start the bot.
-    
-    Args:
-        application: The application instance.
-    """
-    # Initialize database
+async def init_db_wrapper():
+    """Initialize the database."""
     await init_db()
-    
-    # Start the database writer
-    asyncio.create_task(db_writer())
-    
-    # Start the bot
-    if ENV == "production":
-        # Use webhook in production
-        await application.bot.set_webhook(url=WEBHOOK_URL)
-        # Remove the '/' at the beginning of the URL for the webhook path
-        webhook_path = WEBHOOK_URL.split("/")[-1]
-        await application.start_webhook(
-            listen="0.0.0.0",
-            port=WEBHOOK_PORT,
-            webhook_path=webhook_path,
-            drop_pending_updates=True,
-        )
-        logger.info(f"Bot started in production mode with webhook: {WEBHOOK_URL}")
-    else:
-        # Use polling in development
-        await application.start_polling(drop_pending_updates=True)
-        logger.info("Bot started in development mode with polling")
-    
-    # Keep the program running
-    await application.updater.stop()
+    logger.info("Database initialization completed")
 
 
-async def stop(application: Application) -> None:
-    """Stop the bot gracefully.
-    
-    Args:
-        application: The application instance.
-    """
-    if ENV == "production":
-        await application.bot.delete_webhook()
-    
-    await application.stop()
-    logger.info("Bot stopped gracefully")
-
-
-async def main() -> None:
-    """Initialize and start the bot."""
-    # Create the Application instance
+def main():
+    """Main function to run the bot."""
+    # Create the Application
     application = Application.builder().token(BOT_TOKEN).build()
     
     # Register handlers
+    application.add_handler(CommandHandler("start", start_handler))
+    application.add_handler(CommandHandler("help", help_handler))
     application.add_handler(CommandHandler("tldr", tldr_handler))
     application.add_handler(CommandHandler("factcheck", factcheck_handler))
     application.add_handler(CommandHandler("q", q_handler))
@@ -85,8 +61,12 @@ async def main() -> None:
     # Add a message handler to log all messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))
     
-    # Add a healthcheck endpoint
-    if ENV == "production":
+    # Initialize database before starting
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(init_db_wrapper())
+    
+    # Configure health check endpoint if using webhook
+    if USE_WEBHOOK:
         from aiohttp import web
         
         async def healthz(_) -> web.Response:
@@ -94,21 +74,26 @@ async def main() -> None:
             return web.Response(text="OK")
         
         application.web_app.router.add_get("/healthz", healthz)
+        
+        # Start bot with webhook
+        logger.info(f"Starting bot in production mode with webhook: {WEBHOOK_URL}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=WEBHOOK_PORT,
+            webhook_url=WEBHOOK_URL,
+            drop_pending_updates=True
+        )
+    else:
+        # Start bot with polling
+        logger.info("Starting bot in development mode with polling")
+        application.run_polling(drop_pending_updates=True)
     
-    # Set up proper signal handling
-    application.run_until_complete(start(application))
-    
-    try:
-        await application.updater.initialize()
-        await application.updater.start_polling()
-        await application.idle()
-    finally:
-        await stop(application)
+    logger.info("Bot started successfully")
 
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        main()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
         sys.exit(0)

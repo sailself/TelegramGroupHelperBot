@@ -15,9 +15,10 @@ class Message(Base):
     __tablename__ = "messages"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
+    message_id = Column(BigInteger, index=True)
     chat_id = Column(BigInteger, index=True)
-    user_id = Column(BigInteger)
-    username = Column(String(255))
+    user_id = Column(BigInteger, nullable=True)
+    username = Column(String(255), nullable=True)
     text = Column(Text)
     language = Column(String(8))
     date = Column(DateTime, default=datetime.utcnow, index=True)

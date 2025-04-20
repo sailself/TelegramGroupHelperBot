@@ -1,45 +1,73 @@
 """Configuration module for the TelegramGroupHelperBot."""
 
+import logging
 import os
-from typing import Final, Literal
+from typing import Dict, List, Optional, cast
 
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
 
-# Bot configuration
-BOT_TOKEN: Final[str] = os.getenv("BOT_TOKEN", "")
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN environment variable is not set")
+# Set up logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
 
-GEMINI_API_KEY: Final[str] = os.getenv("GEMINI_API_KEY", "")
-if not GEMINI_API_KEY:
-    raise ValueError("GEMINI_API_KEY environment variable is not set")
+# Bot settings
+# Bot token from BotFather
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Database configuration
-DATABASE_URL: Final[str] = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot.db")
+# Database settings
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///bot.db")
 
-# Webhook configuration
-ENV: Final[Literal["development", "production"]] = os.getenv("ENV", "development") == "production" and "production" or "development"
-WEBHOOK_URL: Final[str] = os.getenv("WEBHOOK_URL", "")
-WEBHOOK_PORT: Final[int] = int(os.getenv("WEBHOOK_PORT", "8080"))
+# Gemini settings
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-pro")
+GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
+GEMINI_TOP_K = int(os.getenv("GEMINI_TOP_K", "40"))
+GEMINI_TOP_P = float(os.getenv("GEMINI_TOP_P", "0.95"))
+GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
 
-# Rate limiting (seconds)
-RATE_LIMIT: Final[int] = 3
+# Whether to use webhooks
+USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")
+WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 
-# System prompts
-TLDR_PROMPT: Final[str] = "你是一个中文助手，请用中文总结以下群聊内容，限制在 200 字以内。"
-FACTCHECK_PROMPT: Final[str] = """
-You are a multilingual fact-checker.
-Cross-check the following statement against reliable web sources.
-Respond in the *same language* as the statement.
-Cite sources inline as numbered Markdown links.
+# Telegram rate limiting (seconds between requests)
+RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "15"))
+
+# Prompt for a short summary
+TLDR_SYSTEM_PROMPT = "你是一个中文助手，请用中文总结以下群聊内容，请列出主要发言用户的名字和观点。限制在 200 字以内。"
+
+# Prompt for fact checking
+FACTCHECK_SYSTEM_PROMPT = """You are an expert fact-checker that is unbiased, honest, and direct. \
+Your job is to evaluate the factual accuracy of the text provided.
+
+For each significant claim, verify using web search results:
+1. Analyze each claim objectively
+2. Provide a judgment on its accuracy (True, False, Partially True, or Insufficient Evidence)
+3. Briefly explain your reasoning with citations to the sources found through web search
+4. When a claim is not factually accurate, provide corrections
+
+Always cite your sources and only draw definitive conclusions when you have sufficient reliable evidence.
 """
 
-# Model configuration
-GEMINI_MODEL: Final[str] = "gemini-2.5-flash-preview-04-17"
-GEMINI_TEMPERATURE: Final[float] = 0.4
-GEMINI_TOP_P: Final[float] = 0.95
-GEMINI_TOP_K: Final[int] = 64
-GEMINI_MAX_OUTPUT_TOKENS: Final[int] = 65536 
+# Prompt for the Q&A bot
+Q_SYSTEM_PROMPT = """You are a helpful assistant in a Telegram group chat. You provide concise, factual, and helpful answers to users' questions.
+
+Guidelines for your responses:
+1. Provide a direct, clear answer to the question.
+2. Be concise but comprehensive.
+3. Fact-check your information using web search and include citations to reliable sources.
+4. When the question asks for technical information, provide accurate and up-to-date information.
+5. IMPORTANT: Use web search to verify all facts and information before answering.
+6. If there's uncertainty, acknowledge it and explain the limitations.
+7. If the query contains inappropriate content, politely decline to engage.
+8. Format your response in an easily readable way using Markdown where appropriate.
+9. Keep your response under 400 words unless a detailed explanation is necessary.
+10. If the answer requires multiple parts, use numbered or bulleted lists.
+11. If the question is in a language other than English, respond in the same language.
+
+Remember to be helpful, accurate, and respectful in your responses.
+""" 

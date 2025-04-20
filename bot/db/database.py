@@ -1,61 +1,81 @@
 """Database connection and session management."""
 
 import asyncio
+import logging
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from datetime import datetime
 
+from sqlalchemy import select as sa_select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.future import select
 
 from bot.config import DATABASE_URL
 from bot.db.models import Base, Message
+
+# Set up logging
+logger = logging.getLogger(__name__)
 
 # Create async engine and session maker
 engine = create_async_engine(DATABASE_URL)
 async_session = async_sessionmaker(engine, expire_on_commit=False, class_=AsyncSession)
 
-# Queue for message logging
-message_queue: asyncio.Queue[Dict] = asyncio.Queue()
-
+# Message queue system
+message_queue = asyncio.Queue()
 
 async def init_db() -> None:
     """Initialize the database and create tables if they don't exist."""
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        # Drop tables first if they exist to ensure schema is up to date
+        # Comment out the next line in production to avoid losing data
+        # await drop_all_tables()
+        
+        # Create all tables based on the models
+        async with engine.begin() as conn:
+            # Create tables based on the models
+            await conn.run_sync(Base.metadata.create_all)
+        
+        logger.info("Database tables created successfully")
+        
+        # Start the database writer task
+        asyncio.create_task(db_writer())
+        logger.info("Database writer task started")
+    except Exception as e:
+        logger.error(f"Error initializing database: {e}")
+        raise
 
 
-async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    """Get a database session."""
-    async with async_session() as session:
-        yield session
-
-
-async def db_writer() -> None:
-    """Background task to write messages to the database in batches."""
-    batch_size = 10
-    batch: List[Dict] = []
+async def drop_all_tables() -> None:
+    """Drop all tables in the database.
     
-    while True:
+    WARNING: This will delete all data. Use with caution!
+    """
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.drop_all)
+        logger.info("All tables dropped successfully")
+    except Exception as e:
+        logger.error(f"Error dropping tables: {e}")
+        raise
+
+
+@asynccontextmanager
+async def get_session() -> AsyncGenerator[AsyncSession, None]:
+    """Get a database session as an async context manager.
+    
+    Usage:
+        async with get_session() as session:
+            # Use session here
+    
+    Yields:
+        AsyncSession: The database session.
+    """
+    async with async_session() as session:
         try:
-            # Get message from queue or wait for new one
-            message_data = await message_queue.get()
-            batch.append(message_data)
-            
-            # If we have a full batch or queue is empty, commit to database
-            if len(batch) >= batch_size or message_queue.empty():
-                if batch:
-                    async with async_session() as session:
-                        async with session.begin():
-                            session.add_all([Message(**msg) for msg in batch])
-                        await session.commit()
-                    batch = []
-            
-            # If queue is empty, wait a short time before checking again
-            if message_queue.empty():
-                await asyncio.sleep(0.1)
-                
-        except Exception as e:
-            print(f"Error in db_writer: {e}")
-            await asyncio.sleep(1)  # Back off on error
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
 
 
 async def get_last_n_text_messages(
@@ -71,17 +91,103 @@ async def get_last_n_text_messages(
     Returns:
         A list of Message objects.
     """
-    async with async_session() as session:
-        query = select(Message).where(
-            Message.chat_id == chat_id,
-            Message.text.isnot(None)
-        ).order_by(Message.date.desc()).limit(n)
-        
-        result = await session.execute(query)
-        messages = result.scalars().all()
-        
-        if exclude_commands:
-            messages = [msg for msg in messages if not msg.text.startswith("/")]
+    async with get_session() as session:
+        try:
+            # Build the base query
+            stmt = (
+                sa_select(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.text.isnot(None))
+            )
             
-        # Return in chronological order
-        return list(reversed(messages)) 
+            # Add command filtering if needed
+            if exclude_commands:
+                stmt = stmt.where(~Message.text.startswith("/"))
+            
+            # Order and limit
+            stmt = stmt.order_by(Message.date.desc()).limit(n)
+            
+            # Execute query
+            result = await session.execute(stmt)
+            messages = result.scalars().all()
+                
+            # Return in chronological order
+            return list(reversed(messages))
+        except Exception as e:
+            logger.error(f"Error retrieving messages: {e}")
+            # Return empty list on error
+            return []
+
+
+async def db_writer() -> None:
+    """Background task to write messages to the database from the queue."""
+    while True:
+        try:
+            # Get next message data from the queue
+            message_data = await message_queue.get()
+            
+            # Insert into database
+            async with get_session() as session:
+                message = Message(**message_data)
+                session.add(message)
+                await session.commit()
+                
+            # Mark task as done
+            message_queue.task_done()
+            
+        except Exception as e:
+            print(f"Error in db_writer: {e}")
+            # Still mark as done to avoid blocking the queue
+            message_queue.task_done()
+            
+        # Small sleep to avoid CPU hogging
+        await asyncio.sleep(0.1)
+
+
+async def queue_message_insert(
+    user_id: int,
+    username: str,
+    text: str,
+    language: str,
+    date: datetime,
+    reply_to_message_id: Optional[int] = None,
+    chat_id: Optional[int] = None,
+    message_id: Optional[int] = None
+) -> None:
+    """Queue a message for insertion into the database.
+    
+    Args:
+        user_id: The ID of the user who sent the message.
+        username: The username of the user who sent the message.
+        text: The text of the message.
+        language: The detected language of the message.
+        date: The date the message was sent.
+        reply_to_message_id: The ID of the message this message is replying to.
+        chat_id: The ID of the chat where the message was sent.
+        message_id: The ID of the message.
+    """
+    message_data = {
+        "user_id": user_id,
+        "username": username,
+        "text": text,
+        "language": language,
+        "date": date,
+        "reply_to_message_id": reply_to_message_id,
+        "chat_id": chat_id or user_id,  # Default to user_id for private chats
+        "message_id": message_id or 0,  # Default to 0 if not provided
+    }
+    
+    await message_queue.put(message_data)
+
+
+async def select_messages(chat_id: int, limit: int = 10) -> List[Message]:
+    """Select messages from the database.
+    
+    Args:
+        chat_id: The ID of the chat.
+        limit: The maximum number of messages to return.
+        
+    Returns:
+        A list of Message objects.
+    """
+    return await get_last_n_text_messages(chat_id, limit) 
