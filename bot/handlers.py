@@ -70,12 +70,14 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # Get the proper user display name
     if message.from_user:
-        if message.from_user.username:
-            username = message.from_user.username
+        if message.from_user.full_name:
+            username = message.from_user.full_name
         elif message.from_user.first_name and message.from_user.last_name:
             username = f"{message.from_user.first_name} {message.from_user.last_name}"
         elif message.from_user.first_name:
             username = message.from_user.first_name
+        elif message.from_user.username:
+            username = message.from_user.username
         else:
             username = "Anonymous"
     else:
@@ -121,8 +123,8 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # Ensure count is reasonable
                 if count < 1:
                     count = 10
-                elif count > 50:
-                    count = 50
+                elif count > 200:
+                    count = 200
                     
             except ValueError:
                 # If the argument is not a valid number, default to 10
@@ -363,10 +365,23 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Detect language
         language, _ = langid.classify(query)
         
+        if update.effective_sender:
+            if update.effective_sender.full_name:
+                username = update.effective_sender.full_name
+            elif update.effective_sender.first_name and update.effective_sender.last_name:
+                username = f"{update.effective_sender.first_name} {update.effective_sender.last_name}"
+            elif update.effective_sender.first_name:
+                username = update.effective_sender.first_name
+            elif update.effective_sender.username:
+                username = update.effective_sender.username
+            else:
+                username = "Anonymous"
+        else:
+            username = "Anonymous"
         # Log the query
         await queue_message_insert(
             user_id=update.effective_sender.id,
-            username=update.effective_sender.name or "",
+            username=username,
             text=query,
             language=language,
             date=update.effective_message.date,

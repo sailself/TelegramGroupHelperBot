@@ -33,6 +33,7 @@ htmlcov/
 
 # Logs
 *.log
+logs/
 
 # Virtual environment
 venv/
