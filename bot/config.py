@@ -2,6 +2,8 @@
 
 import logging
 import os
+from logging.handlers import TimedRotatingFileHandler
+from pathlib import Path
 from typing import Dict, List, Optional, cast
 
 from dotenv import load_dotenv
@@ -9,10 +11,47 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
+# Create logs directory if it doesn't exist
+logs_dir = Path("logs")
+logs_dir.mkdir(exist_ok=True)
+
 # Set up logging
+# Configure root logger
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", 
+    level=logging.INFO
 )
+
+# Get the root logger
+root_logger = logging.getLogger()
+
+# Remove any existing handlers
+for handler in root_logger.handlers[:]:
+    root_logger.removeHandler(handler)
+
+# Create a file handler that rotates daily
+file_handler = TimedRotatingFileHandler(
+    filename=logs_dir / "bot.log",
+    when="midnight",
+    interval=1,
+    backupCount=30,  # Keep logs for 30 days
+    encoding="utf-8"
+)
+file_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+file_handler.setLevel(logging.INFO)
+
+# Create a console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s"))
+console_handler.setLevel(logging.INFO)
+
+# Add handlers to root logger
+root_logger.addHandler(file_handler)
+root_logger.addHandler(console_handler)
+
+# Create a logger for this module
+logger = logging.getLogger(__name__)
+logger.info("Logging configured with daily rotation")
 
 # Bot settings
 # Bot token from BotFather
@@ -51,6 +90,7 @@ For each significant claim, verify using web search results:
 4. When a claim is not factually accurate, provide corrections
 5. IMPORTANT: The current date is {current_date}. Verify all temporal claims relative to this date.
 6. List the sources you used to check the facts.
+7. CRITICAL: Always respond in the same language as the user's message or the language from the image.
 
 Always cite your sources and only draw definitive conclusions when you have sufficient reliable evidence.
 """

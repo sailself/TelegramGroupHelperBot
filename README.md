@@ -7,6 +7,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Question Answering**: Ask questions with `/q <your question>` and receive factual, search-grounded answers
+- **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
 - **Database Logging**: Messages are stored in a database for summarization and analysis
 - **Multi-language Support**: Automatically detects and responds in the same language as the query
@@ -80,6 +81,18 @@ This bot uses Google's Gemini AI with Google Search grounding to ensure response
 2. Grounds its response in the search results
 3. Provides a factual, up-to-date answer
 4. Includes citations where appropriate
+
+## Image Understanding
+
+The bot leverages Gemini's advanced image understanding capabilities to:
+
+- Analyze photos shared in the group
+- Answer questions about image content
+- Fact-check claims in images or captions
+- Detect objects and scenes in photos
+- Process multiple image formats (JPEG, PNG, WEBP, HEIC, HEIF)
+
+Simply reply to an image with `/q What's in this picture?` or `/factcheck` to analyze visual content.
 
 ## Database Management
 

@@ -210,9 +210,25 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Get the message to fact-check
     message_to_check = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
     
-    if not message_to_check:
+    # Check for images in the message
+    image_url = None
+    if update.effective_message.reply_to_message.photo:
+        # Get the largest photo (last in the list)
+        photo = update.effective_message.reply_to_message.photo[-1]
+        file = await context.bot.get_file(photo.file_id)
+        image_url = file.file_path
+        logger.info(f"Found image in message to fact-check: {image_url}")
+        
+        # If there's a caption, use it as the message text
+        if update.effective_message.reply_to_message.caption:
+            message_to_check = update.effective_message.reply_to_message.caption
+        # If there's no text at all, add a default prompt for image analysis
+        elif not message_to_check:
+            message_to_check = "Please analyze this image and verify any claims or content shown in it."
+    
+    if not message_to_check and not image_url:
         await update.effective_message.reply_text(
-            "Cannot fact-check an empty message."
+            "Cannot fact-check an empty message with no image."
         )
         return
         
@@ -221,7 +237,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     # Send a "processing" message
     processing_message = await update.effective_message.reply_text(
-        "Fact-checking message..."
+        "Fact-checking message..." if not image_url else "Analyzing image and fact-checking content..."
     )
     
     try:
@@ -233,7 +249,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         response_queue = await stream_gemini(
             system_prompt=system_prompt,
             user_content=message_to_check,
-            response_language=language  # Pass the detected language
+            response_language=language,  # Pass the detected language
+            image_url=image_url  # Pass the image URL if present
         )
         
         # Process the streamed response
@@ -241,7 +258,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         # Initialize the message
         await processing_message.edit_text(
-            "Checking facts...", 
+            "Checking facts..." if not image_url else "Analyzing image and checking facts...", 
             parse_mode=None
         )
         
@@ -311,11 +328,28 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Get the query from the message
         query = " ".join(context.args) if context.args else ""
         
-        # Check if the command is a reply to a message
-        if update.effective_message.reply_to_message and not query:
-            query = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
+        # Check if there's an image in the message being replied to
+        image_url = None
         
-        if not query:
+        # Check if the command is a reply to a message
+        if update.effective_message.reply_to_message:
+            # Check for text
+            if not query:
+                query = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
+            
+            # Check for images
+            if update.effective_message.reply_to_message.photo:
+                # Get the largest photo (last in the list)
+                photo = update.effective_message.reply_to_message.photo[-1]
+                file = await context.bot.get_file(photo.file_id)
+                image_url = file.file_path
+                logger.info(f"Found image in message to analyze: {image_url}")
+                
+                # If there's no text at all, add a default prompt for image analysis
+                if not query:
+                    query = "Please analyze this image and tell me what you see."
+        
+        if not query and not image_url:
             await update.effective_message.reply_text(
                 "Please provide a question after /q or reply to a message with /q"
             )
@@ -323,7 +357,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Send a "processing" message
         processing_message = await update.effective_message.reply_text(
-            "Processing your question..."
+            "Processing your question..." if not image_url else "Analyzing image and processing your question..."
         )
         
         # Detect language
@@ -348,7 +382,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Get response from Gemini
         response = await call_gemini(
             system_prompt=system_prompt,
-            user_content=query
+            user_content=query,
+            image_url=image_url  # Pass the image URL if present
         )
         
         if response:
@@ -396,8 +431,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "👋 Hello! I'm TelegramGroupHelperBot, your AI assistant for this chat.\n\n"
         "I can help with the following commands:\n"
         "• /tldr [number] - Summarize recent messages (default: 10)\n"
-        "• /factcheck - Reply to a message to fact-check it\n"
-        "• /q [question] - Ask me any question\n"
+        "• /factcheck - Reply to a message or image to fact-check it\n"
+        "• /q [question] - Ask me any question or analyze images\n"
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
@@ -419,11 +454,11 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "Here's how you can use me:\n\n"
         "• /tldr [number] - Summarize recent messages. You can specify how many messages to include.\n"
         "  Example: `/tldr 20` will summarize the last 20 messages.\n\n"
-        "• /factcheck - Reply to a message to fact-check it.\n"
-        "  Example: Reply to any message with `/factcheck` to verify its claims.\n\n"
-        "• /q [question] - Ask me any question.\n"
-        "  Example: `/q What is the capital of France?`\n\n"
-        "I'm powered by Google Gemini AI to provide accurate and helpful answers."
+        "• /factcheck - Reply to a message or image to fact-check it.\n"
+        "  Example: Reply to any message or photo with `/factcheck` to verify its claims or analyze visual content.\n\n"
+        "• /q [question] - Ask me any question or analyze images.\n"
+        "  Example: `/q What is the capital of France?` or reply to an image with `/q What's in this picture?`\n\n"
+        "I'm powered by Google Gemini AI to provide accurate and helpful answers, including advanced image understanding capabilities."
     )
     
     await update.effective_message.reply_text(help_message) 
