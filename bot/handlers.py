@@ -169,7 +169,7 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if response:
             await processing_message.edit_text(
                 response,
-                parse_mode=ParseMode.MARKDOWN
+                parse_mode=ParseMode.MARKDOWN_V2
             )
         else:
             await processing_message.edit_text(
@@ -290,7 +290,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             try:
                 await processing_message.edit_text(
                     full_response,
-                    parse_mode=ParseMode.MARKDOWN
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
             except Exception:
                 # If Markdown parsing fails, send as plain text
@@ -406,7 +406,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 # Try to send with Markdown formatting
                 await processing_message.edit_text(
                     response,
-                    parse_mode=ParseMode.MARKDOWN
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
             except Exception as e:
                 # If Markdown fails, try to send as plain text
