@@ -1,20 +1,31 @@
 """Message handlers for the TelegramGroupHelperBot."""
 
+import json
 import logging
 import re
 import time
+import uuid
 from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
 
 import langid
+import requests
 from bs4 import BeautifulSoup
 from html2text import html2text
 from telegram import Update
 from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from bot.config import RATE_LIMIT_SECONDS, TLDR_SYSTEM_PROMPT, FACTCHECK_SYSTEM_PROMPT, Q_SYSTEM_PROMPT
+from bot.config import (
+    RATE_LIMIT_SECONDS, 
+    TELEGRAM_MAX_LENGTH, 
+    TLDR_SYSTEM_PROMPT, 
+    FACTCHECK_SYSTEM_PROMPT, 
+    Q_SYSTEM_PROMPT,
+    TELEGRAPH_ACCESS_TOKEN
+)
 from bot.db.database import select_messages, queue_message_insert
 from bot.llm import call_gemini, stream_gemini
 
@@ -46,6 +57,115 @@ def is_rate_limited(user_id: int) -> bool:
     
     user_rate_limits[user_id] = current_time
     return False
+
+async def create_telegraph_page(title: str, content: str) -> Optional[str]:
+    """Create a Telegraph page with the provided content.
+    
+    Args:
+        title: The title of the page.
+        content: The content of the page as plain text.
+        
+    Returns:
+        The URL of the created page, or None if creation failed.
+    """
+    try:
+        # Convert content to Telegraph's node-based format
+        # For simple text content, we'll split it into paragraphs
+        paragraphs = content.split('\n\n')
+        
+        # Create a node structure for each paragraph
+        nodes = []
+        for paragraph in paragraphs:
+            if paragraph.strip():  # Skip empty paragraphs
+                # Create a paragraph node with text content
+                nodes.append({
+                    "tag": "p", 
+                    "children": [paragraph.strip()]
+                })
+        
+        # Create the page
+        response = requests.post(
+            'https://api.telegra.ph/createPage',
+            data={
+                'access_token': TELEGRAPH_ACCESS_TOKEN,
+                'title': title,
+                'content': json.dumps(nodes),  # This is the key change - properly formatted JSON
+                'return_content': 'false'
+            },
+            timeout=10
+        )
+        
+        response_data = response.json()
+        
+        if response_data.get('ok'):
+            return response_data['result']['url']
+        else:
+            logger.error(f"Failed to create Telegraph page: {response_data.get('error')}")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Error creating Telegraph page: {e}")
+        return None
+
+async def send_response(message, response, title="Response", parse_mode=ParseMode.MARKDOWN_V2):
+    """Send a response, creating a Telegraph page if it's too long.
+    
+    Args:
+        message: The message to edit with the response.
+        response: The response text to send.
+        title: The title for the Telegraph page if created.
+        parse_mode: The parse mode to use for Telegram messages.
+        
+    Returns:
+        None
+    """
+    # Proactively check if the message is too long
+    if len(response) > TELEGRAM_MAX_LENGTH:
+        logger.info(f"Response length {len(response)} exceeds threshold {TELEGRAM_MAX_LENGTH}, creating Telegraph page")
+        telegraph_url = await create_telegraph_page(title, response)
+        if telegraph_url:
+            await message.edit_text(
+                f"I have too much to say. Please view it here: {telegraph_url}"
+            )
+        else:
+            # Fallback: try to send as plain text
+            try:
+                await message.edit_text(response)
+            except BadRequest as e:
+                # If still too long, truncate
+                await message.edit_text(
+                    f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
+                )
+    else:
+        # Message is within limits, try to send with formatting
+        try:
+            await message.edit_text(
+                response,
+                parse_mode=parse_mode
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send response with formatting: {e}")
+            # If formatting fails, try to send as plain text
+            try:
+                await message.edit_text(response)
+            except BadRequest as plain_e:
+                if "Message_too_long" in str(plain_e):
+                    # Handle the case where the message is unexpectedly too long
+                    telegraph_url = await create_telegraph_page(title, response)
+                    if telegraph_url:
+                        await message.edit_text(
+                            f"The response is too long for Telegram. View it here: {telegraph_url}"
+                        )
+                    else:
+                        # Last resort: truncate
+                        await message.edit_text(
+                            f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
+                        )
+                else:
+                    logger.error(f"Failed to send response as plain text: {plain_e}")
+                    await message.edit_text(
+                        "Error: Failed to format response. Please try again."
+                    )
 
 async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log a message to the database.
@@ -167,10 +287,7 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         
         if response:
-            await processing_message.edit_text(
-                response,
-                parse_mode=ParseMode.MARKDOWN_V2
-            )
+            await send_response(processing_message, response, "Message Summary", ParseMode.MARKDOWN_V2)
         else:
             await processing_message.edit_text(
                 "Failed to generate a summary. Please try again later."
@@ -273,28 +390,10 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 break
                 
             full_response = chunk
-            
-            # Update the message periodically (not on every chunk to avoid rate limits)
-            # Only update if we have a substantial amount of new content
-            if len(full_response) % 50 == 0:
-                try:
-                    await processing_message.edit_text(
-                        full_response,
-                        parse_mode=None
-                    )
-                except Exception as e:
-                    logger.warning(f"Error updating streaming message: {e}")
         
         # Final update with complete response
         if full_response:
-            try:
-                await processing_message.edit_text(
-                    full_response,
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception:
-                # If Markdown parsing fails, send as plain text
-                await processing_message.edit_text(full_response)
+            await send_response(processing_message, full_response, "Fact Check Results", ParseMode.MARKDOWN_V2)
         else:
             await processing_message.edit_text(
                 "Failed to fact-check the message. Please try again later."
@@ -402,22 +501,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         
         if response:
-            try:
-                # Try to send with Markdown formatting
-                await processing_message.edit_text(
-                    response,
-                    parse_mode=ParseMode.MARKDOWN_V2
-                )
-            except Exception as e:
-                # If Markdown fails, try to send as plain text
-                logger.warning(f"Failed to send response with Markdown: {e}")
-                try:
-                    await processing_message.edit_text(response)
-                except Exception as inner_e:
-                    logger.error(f"Failed to send response as plain text: {inner_e}")
-                    await processing_message.edit_text(
-                        "Error: Failed to format response. Please try again."
-                    )
+            await send_response(processing_message, response, "Answer to Your Question", ParseMode.MARKDOWN_V2)
         else:
             await processing_message.edit_text(
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else."

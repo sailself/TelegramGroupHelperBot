@@ -76,6 +76,12 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 # Telegram rate limiting (seconds between requests)
 RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "15"))
 
+# Telegram message length threshold (characters) before creating Telegraph page
+TELEGRAM_MAX_LENGTH = int(os.getenv("TELEGRAM_MAX_LENGTH", "4000"))
+
+# Telegraph access token
+TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", "")
+
 # Prompt for a short summary
 TLDR_SYSTEM_PROMPT = "你是一个中文助手，请用中文总结以下群聊内容，请列出主要发言用户的名字和观点。限制在 500 字以内。"
 
