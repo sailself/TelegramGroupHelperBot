@@ -29,7 +29,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 2. Create a virtual environment and activate it:
    ```bash
    python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   venv/Scripts/activate  # On Windows: venv\Scripts\activate
    ```
 
 3. Install the dependencies:

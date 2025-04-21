@@ -242,8 +242,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     
     try:
         # Format the system prompt with the current date
-        current_date = datetime.now().strftime("%B %d, %Y")
-        system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_date=current_date)
+        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
+        system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_datetime=current_datetime)
         
         # Get response from Gemini with fact checking, using the detected language
         response_queue = await stream_gemini(
@@ -376,8 +376,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         
         # Format the system prompt with the current date
-        current_date = datetime.now().strftime("%B %d, %Y")
-        system_prompt = Q_SYSTEM_PROMPT.format(current_date=current_date)
+        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
+        system_prompt = Q_SYSTEM_PROMPT.format(current_datetime=current_datetime)
         
         # Get response from Gemini
         response = await call_gemini(

@@ -51,7 +51,7 @@ logger.info(f"Using Gemini model: {GEMINI_MODEL}")
 
 # Define a multimodal model for image processing
 # Use one of the recommended models that support image understanding
-GEMINI_VISION_MODEL = "gemini-2.0-flash"  # Supports images and is optimized for faster responses
+# GEMINI_VISION_MODEL = "gemini-2.0-flash"  # Supports images and is optimized for faster responses
 logger.info(f"Using vision model: {GEMINI_MODEL}")
 
 
