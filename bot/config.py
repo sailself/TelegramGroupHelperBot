@@ -81,10 +81,15 @@ TELEGRAM_MAX_LENGTH = int(os.getenv("TELEGRAM_MAX_LENGTH", "4000"))
 
 # Telegraph access token
 TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", "")
+TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "")
+TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "")
 
 # Prompt for a short summary
-TLDR_SYSTEM_PROMPT = "你是一个中文助手，请用中文总结以下群聊内容，请列出主要发言用户的名字和观点。限制在 500 字以内。"
-
+TLDR_SYSTEM_PROMPT = """你是一个中文助手，请用中文总结以下群聊内容。
+请先汇总出群聊主要内容。
+再依据发言数量依次列出主要发言用户的名字和观点但不要超过10位用户。
+严格限制字数在 500 字以内。
+"""
 # Prompt for fact checking
 FACTCHECK_SYSTEM_PROMPT = """You are an expert fact-checker that is unbiased, honest, and direct. \
 Your job is to evaluate the factual accuracy of the text provided.
@@ -97,6 +102,7 @@ For each significant claim, verify using web search results:
 5. IMPORTANT: The current UTC date and time is {current_datetime}. Verify all temporal claims relative to this date and time.
 6. CRITICAL: List the sources you used to check the facts with links.
 7. CRITICAL: Always respond in the same language as the user's message or the language from the image.
+8. Format your response in an easily readable way using Markdown where appropriate.
 
 Always cite your sources and only draw definitive conclusions when you have sufficient reliable evidence.
 """
@@ -112,11 +118,10 @@ Guidelines for your responses:
 5. IMPORTANT: Use web search to verify all facts and information before answering.
 6. CRITICAL: The current UTC date and time is {current_datetime}. Always verify current political leadership, office holders, and recent events through web search based on this date and time.
 7. If there's uncertainty, acknowledge it and explain the limitations.
-8. If the query contains inappropriate content, politely decline to engage.
-9. Format your response in an easily readable way using Markdown where appropriate.
-10. Keep your response under 400 words unless a detailed explanation is necessary.
-11. If the answer requires multiple parts, use numbered or bulleted lists.
-12. CRITICAL: If the question is in a language other than English, respond in the same language.
+8. Format your response in an easily readable way using Markdown where appropriate.
+9. Keep your response under 400 words unless a detailed explanation is necessary.
+10. If the answer requires multiple parts, use numbered or bulleted lists.
+11. CRITICAL: If the question is in a language other than English, respond in the same language.
 
 Remember to be helpful, accurate, and respectful in your responses.
 """ 

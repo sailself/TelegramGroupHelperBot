@@ -8,6 +8,8 @@ import uuid
 from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
+import markdown
+from bs4 import BeautifulSoup
 
 import langid
 import requests
@@ -24,7 +26,9 @@ from bot.config import (
     TLDR_SYSTEM_PROMPT, 
     FACTCHECK_SYSTEM_PROMPT, 
     Q_SYSTEM_PROMPT,
-    TELEGRAPH_ACCESS_TOKEN
+    TELEGRAPH_ACCESS_TOKEN,
+    TELEGRAPH_AUTHOR_NAME,
+    TELEGRAPH_AUTHOR_URL
 )
 from bot.db.database import select_messages, queue_message_insert
 from bot.llm import call_gemini, stream_gemini
@@ -58,38 +62,96 @@ def is_rate_limited(user_id: int) -> bool:
     user_rate_limits[user_id] = current_time
     return False
 
+def markdown_to_telegraph_nodes(md_content: str) -> List[Dict]:
+    """Convert markdown content to Telegraph node format.
+    
+    Args:
+        md_content: Content in markdown format
+        
+    Returns:
+        List of Telegraph node objects
+    """
+    # Convert markdown to HTML
+    html_content = markdown.markdown(md_content)
+    
+    # Parse HTML
+    soup = BeautifulSoup(html_content, 'html.parser')
+    
+    # Convert to Telegraph nodes
+    return html_to_telegraph_nodes(soup)
+
+def html_to_telegraph_nodes(element) -> List[Dict]:
+    """Convert HTML elements to Telegraph node format recursively.
+    
+    Args:
+        element: BeautifulSoup element
+        
+    Returns:
+        List of Telegraph node objects
+    """
+    nodes = []
+    
+    # Process all child elements
+    for child in element.children:
+        # Text node
+        if child.name is None:
+            text = child.string.strip()
+            if text:
+                nodes.append(text)
+        # Element node
+        else:
+            node = {}
+            
+            # Map tag
+            if child.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 
+                            'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 
+                            'a', 'b', 'strong', 'i', 'em', 'u', 's', 'br', 'hr', 
+                            'img', 'video', 'figcaption', 'figure']:
+                node['tag'] = child.name
+            else:
+                # Default to 'p' for unsupported tags
+                node['tag'] = 'p'
+            
+            # Add attributes if needed
+            if child.name == 'a' and child.get('href'):
+                node['attrs'] = {'href': child['href']}
+            elif child.name == 'img' and child.get('src'):
+                node['attrs'] = {'src': child['src']}
+                if child.get('alt'):
+                    node['attrs']['alt'] = child['alt']
+            
+            # Process children recursively
+            children = html_to_telegraph_nodes(child)
+            if children:
+                node['children'] = children
+            
+            nodes.append(node)
+    
+    return nodes
+
 async def create_telegraph_page(title: str, content: str) -> Optional[str]:
-    """Create a Telegraph page with the provided content.
+    """Create a Telegraph page with the provided markdown content.
     
     Args:
         title: The title of the page.
-        content: The content of the page as plain text.
+        content: The content of the page in markdown format.
         
     Returns:
         The URL of the created page, or None if creation failed.
     """
     try:
-        # Convert content to Telegraph's node-based format
-        # For simple text content, we'll split it into paragraphs
-        paragraphs = content.split('\n\n')
-        
-        # Create a node structure for each paragraph
-        nodes = []
-        for paragraph in paragraphs:
-            if paragraph.strip():  # Skip empty paragraphs
-                # Create a paragraph node with text content
-                nodes.append({
-                    "tag": "p", 
-                    "children": [paragraph.strip()]
-                })
+        # Convert markdown to Telegraph nodes
+        nodes = markdown_to_telegraph_nodes(content)
         
         # Create the page
         response = requests.post(
             'https://api.telegra.ph/createPage',
             data={
                 'access_token': TELEGRAPH_ACCESS_TOKEN,
+                'author_name': TELEGRAPH_AUTHOR_NAME,
+                'author_url': TELEGRAPH_AUTHOR_URL,
                 'title': title,
-                'content': json.dumps(nodes),  # This is the key change - properly formatted JSON
+                'content': json.dumps(nodes),
                 'return_content': 'false'
             },
             timeout=10
@@ -107,7 +169,8 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
         logger.error(f"Error creating Telegraph page: {e}")
         return None
 
-async def send_response(message, response, title="Response", parse_mode=ParseMode.MARKDOWN_V2):
+
+async def send_response(message, response, title="Response", parse_mode=ParseMode.MARKDOWN):
     """Send a response, creating a Telegraph page if it's too long.
     
     Args:
@@ -119,8 +182,11 @@ async def send_response(message, response, title="Response", parse_mode=ParseMod
     Returns:
         None
     """
-    # Proactively check if the message is too long
-    if len(response) > TELEGRAM_MAX_LENGTH:
+   # Count the number of lines in the response
+    line_count = response.count('\n') + 1
+    
+    # Check if message exceeds line count threshold or character limit
+    if line_count > 22 or len(response) > TELEGRAM_MAX_LENGTH:
         logger.info(f"Response length {len(response)} exceeds threshold {TELEGRAM_MAX_LENGTH}, creating Telegraph page")
         telegraph_url = await create_telegraph_page(title, response)
         if telegraph_url:
@@ -287,7 +353,7 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         
         if response:
-            await send_response(processing_message, response, "Message Summary", ParseMode.MARKDOWN_V2)
+            await send_response(processing_message, response, "Message Summary", ParseMode.MARKDOWN)
         else:
             await processing_message.edit_text(
                 "Failed to generate a summary. Please try again later."
@@ -393,7 +459,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         
         # Final update with complete response
         if full_response:
-            await send_response(processing_message, full_response, "Fact Check Results", ParseMode.MARKDOWN_V2)
+            await send_response(processing_message, full_response, "Fact Check Results", ParseMode.MARKDOWN)
         else:
             await processing_message.edit_text(
                 "Failed to fact-check the message. Please try again later."
@@ -501,7 +567,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         
         if response:
-            await send_response(processing_message, response, "Answer to Your Question", ParseMode.MARKDOWN_V2)
+            await send_response(processing_message, response, "Answer to Your Question", ParseMode.MARKDOWN)
         else:
             await processing_message.edit_text(
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else."
