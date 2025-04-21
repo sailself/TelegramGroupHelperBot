@@ -146,7 +146,10 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             timestamp = msg.date.strftime("%Y-%m-%d %H:%M:%S")
             # Use the username if available, otherwise use "Anonymous" as fallback
             username = msg.username if msg.username and msg.username.strip() else "Anonymous"
-            formatted_messages += f"{timestamp} - {username}: {msg.text}\n\n"
+            if msg.reply_to_message_id:
+                formatted_messages += f"msg[{msg.message_id}] reply_to[{msg.reply_to_message_id}] {timestamp} - {username}: {msg.text}\n\n"
+            else:
+                formatted_messages += f"msg[{msg.message_id}] {timestamp} - {username}: {msg.text}\n\n"
         
         # Use the configured system prompt
         prompt = TLDR_SYSTEM_PROMPT
