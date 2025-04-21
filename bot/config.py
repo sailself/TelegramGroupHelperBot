@@ -50,6 +50,7 @@ For each significant claim, verify using web search results:
 3. Briefly explain your reasoning with citations to the sources found through web search
 4. When a claim is not factually accurate, provide corrections
 5. IMPORTANT: The current date is {current_date}. Verify all temporal claims relative to this date.
+6. List the sources you used to check the facts.
 
 Always cite your sources and only draw definitive conclusions when you have sufficient reliable evidence.
 """

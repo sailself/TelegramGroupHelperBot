@@ -328,8 +328,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         # Log the query
         await queue_message_insert(
-            user_id=update.effective_message.from_user.id,
-            username=update.effective_message.from_user.username or "",
+            user_id=update.effective_sender.id,
+            username=update.effective_sender.name or "",
             text=query,
             language=language,
             date=update.effective_message.date,
