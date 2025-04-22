@@ -9,6 +9,9 @@ kill_timeout = 5
 [env]
   ENV = "production"
   WEBHOOK_PORT = "8080"
+  TELEGRAM_MAX_LENGTH = "4000"
+  # Note: Secrets like BOT_TOKEN, GEMINI_API_KEY, and TELEGRAPH_ACCESS_TOKEN
+  # should be set using `fly secrets set` command
 
 [mounts]
   source = "bot_data"
