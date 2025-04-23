@@ -309,8 +309,8 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # Ensure count is reasonable
                 if count < 1:
                     count = 10
-                elif count > 200:
-                    count = 200
+                elif count > 500:
+                    count = 500
                     
             except ValueError:
                 # If the argument is not a valid number, default to 10
@@ -429,21 +429,27 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Format the system prompt with the current date
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_datetime=current_datetime)
-        
+        use_pro_model=True
         # Get response from Gemini with fact checking, using the detected language
         response_queue = await stream_gemini(
             system_prompt=system_prompt,
             user_content=message_to_check,
             response_language=language,  # Pass the detected language
-            image_url=image_url  # Pass the image URL if present
+            image_url=image_url,
+            use_pro_model=use_pro_model  # Pass the image URL if present
         )
         
         # Process the streamed response
         full_response = ""
-        
+
+        resp_msg = "Checking facts" if not image_url else "Analyzing image and checking facts"
+        if use_pro_model:
+            resp_msg = f"{resp_msg} with Pro Model...\nIt could take longer than usual, please be patient."
+        else:
+            resp_msg = f"{resp_msg}..."
         # Initialize the message
         await processing_message.edit_text(
-            "Checking facts..." if not image_url else "Analyzing image and checking facts...", 
+            resp_msg, 
             parse_mode=None
         )
         
@@ -501,13 +507,24 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Check if the command is a reply to a message
         if update.effective_message.reply_to_message:
             # Check for text
-            if not query:
-                query = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
+            reply = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
+            if reply:
+                if query:
+                    query = f"Quote: {reply}\nQuestion: {query}"
+                else:
+                    query = reply
             
-            # Check for images
+            # Check for images, the reply to message photo has higher priority
+            photo = None
+            if update.effective_message.photo:
+                # Get the largest photo (last in the list)
+                photo = update.effective_message.photo[-1]
+
             if update.effective_message.reply_to_message.photo:
                 # Get the largest photo (last in the list)
                 photo = update.effective_message.reply_to_message.photo[-1]
+
+            if photo:
                 file = await context.bot.get_file(photo.file_id)
                 image_url = file.file_path
                 logger.info(f"Found image in message to analyze: {image_url}")

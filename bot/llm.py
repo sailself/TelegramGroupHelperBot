@@ -16,6 +16,7 @@ from bot.config import (
     GEMINI_API_KEY,
     GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
+    GEMINI_PRO_MODEL,
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
@@ -43,6 +44,10 @@ _safety_settings = [
     },
     {
         "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+        "threshold": "OFF"
+    },
+    {
+        "category": "HARM_CATEGORY_CIVIC_INTEGRITY",
         "threshold": "OFF"
     }
 ]
@@ -111,6 +116,7 @@ async def call_gemini(
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
     image_url: Optional[str] = None,
+    use_pro_model: bool = False,
 ) -> str:
     """Call the Gemini API with the given prompts.
     
@@ -120,6 +126,7 @@ async def call_gemini(
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
         image_url: Optional URL to an image to include in the query.
+        use_pro_model: Whether to use Gemini Pro model.
         
     Returns:
         The model's response.
@@ -153,7 +160,9 @@ async def call_gemini(
                     system_prompt=system_prompt, 
                     user_content=user_content, 
                     image_data=image_data,
-                    response_language=response_language
+                    use_search_grounding=use_search_grounding,
+                    response_language=response_language,
+                    use_pro_model=use_pro_model
                 )
         
         # Configure generation parameters
@@ -170,10 +179,16 @@ async def call_gemini(
             config["tools"] = [{"google_search": {}}]
             logger.info("Using Google Search Grounding for this request")
         
+        model = GEMINI_MODEL
+        if use_pro_model:
+            model = GEMINI_PRO_MODEL
+            logger.info("Using Pro model for Gemini")
+        else:
+            logger.info("Using Standard model for Gemini")
         # Make the API call
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model=GEMINI_MODEL,
+            model=model,
             contents=combined_prompt,
             config=config
         )
@@ -191,7 +206,7 @@ async def call_gemini(
         # Fall back to non-grounding call if grounding fails
         if use_search_grounding and not image_url:
             logger.info("Falling back to non-grounding call")
-            return await call_gemini(system_prompt, user_content, response_language, False)
+            return await call_gemini(system_prompt, user_content, response_language, False, False)
         else:
             raise  # Re-raise the exception
 
@@ -200,7 +215,9 @@ async def call_gemini_vision(
     system_prompt: str,
     user_content: str,
     image_data: bytes,
+    use_search_grounding: bool = True,
     response_language: Optional[str] = None,
+    use_pro_model: bool = False,
 ) -> str:
     """Call the Gemini Vision API with text and image.
     
@@ -208,7 +225,9 @@ async def call_gemini_vision(
         system_prompt: The system prompt.
         user_content: The user content.
         image_data: The image data as bytes.
+        use_search_grounding: Whether to use Google Search Grounding.
         response_language: The language to respond in, if specified.
+        use_pro_model: Whether to use Gemini Pro model.
         
     Returns:
         The model's response.
@@ -233,6 +252,11 @@ async def call_gemini_vision(
             "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
             "safety_settings": _safety_settings,
         }
+
+        # Add search tool if enabled
+        if use_search_grounding:
+            config["tools"] = [{"google_search": {}}]
+            logger.info("Using Google Search Grounding for this request")
         
         # Create the content parts for the request according to the API documentation
         # First the text prompt, then the image
@@ -240,13 +264,17 @@ async def call_gemini_vision(
             combined_prompt,
             types.Part.from_bytes(data=image_data, mime_type=mime_type)
         ]
-        
-        logger.info("Calling Gemini Vision model with image and text")
-        
+
+        model = GEMINI_MODEL
+        if use_pro_model:
+            model = GEMINI_PRO_MODEL
+            logger.info("Using Pro model for Gemini Vision with image and text")
+        else:
+            logger.info("Using Standard model for Gemini Vision with image and text")
         # Make the API call with both text and image using the client.models method
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model=GEMINI_MODEL,
+            model=model,
             contents=contents,
             config=config
         )
@@ -270,6 +298,7 @@ async def stream_gemini(
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
     image_url: Optional[str] = None,
+    use_pro_model: bool = False,
 ) -> asyncio.Queue:
     """Stream the Gemini API response.
     
@@ -279,6 +308,7 @@ async def stream_gemini(
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
         image_url: Optional URL to an image to include in the query.
+        use_pro_model: Whether to use Gemini Pro model.
         
     Returns:
         A queue of response chunks.
@@ -296,7 +326,8 @@ async def stream_gemini(
                 user_content=user_content,
                 response_language=response_language, 
                 use_search_grounding=use_search_grounding,
-                image_url=image_url
+                image_url=image_url,
+                use_pro_model=use_pro_model
             )
             
             # Put the full response in the queue
@@ -342,12 +373,15 @@ async def stream_gemini(
                 config["tools"] = [{"google_search": {}}]
                 logger.info("Stream - Using Google Search Grounding")
             
-            logger.info(f"Stream - Sending message to model: {GEMINI_MODEL}")
+            model = GEMINI_MODEL
+            if use_pro_model:
+                model = GEMINI_PRO_MODEL
+            logger.info(f"Stream - Sending message to model: {model}")
             
             # For streaming, we need to handle the generate_content_stream method
             stream_response = await asyncio.to_thread(
                 client.models.generate_content_stream,
-                model=GEMINI_MODEL,
+                model=model,
                 contents=combined_prompt,
                 config=config
             )
