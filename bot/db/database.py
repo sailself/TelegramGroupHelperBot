@@ -6,8 +6,9 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from datetime import datetime
 
-from sqlalchemy import select as sa_select
+from sqlalchemy import select as sa_select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.exc import IntegrityError
 
 from bot.config import DATABASE_URL
 from bot.db.models import Base, Message
@@ -120,23 +121,62 @@ async def get_last_n_text_messages(
 
 
 async def db_writer() -> None:
-    """Background task to write messages to the database from the queue."""
+    """Background task to write messages to the database from the queue with upsert support.
+    
+    Handles INSERT or UPDATE based on unique constraint of (chat_id, message_id).
+    """
     while True:
         try:
             # Get next message data from the queue
             message_data = await message_queue.get()
             
-            # Insert into database
+            # Extract key identifiers
+            chat_id = message_data.get("chat_id")
+            message_id = message_data.get("message_id")
+            
             async with get_session() as session:
-                message = Message(**message_data)
-                session.add(message)
-                await session.commit()
+                try:
+                    # Check if a record with the same chat_id and message_id exists
+                    stmt = sa_select(Message).where(
+                        Message.chat_id == chat_id,
+                        Message.message_id == message_id
+                    )
+                    result = await session.execute(stmt)
+                    existing_message = result.scalars().first()
+                    
+                    if existing_message:
+                        # Update existing record
+                        logger.debug(f"Updating existing message: chat_id={chat_id}, message_id={message_id}")
+                        for key, value in message_data.items():
+                            setattr(existing_message, key, value)
+                    else:
+                        # Insert new record
+                        logger.debug(f"Inserting new message: chat_id={chat_id}, message_id={message_id}")
+                        message = Message(**message_data)
+                        session.add(message)
+                        
+                    await session.commit()
+                except IntegrityError as e:
+                    # Handle race condition if a record was inserted between our check and update
+                    logger.warning(f"IntegrityError during message upsert: {e}")
+                    await session.rollback()
+                    
+                    # Try to update existing record
+                    stmt = sa_update(Message).where(
+                        Message.chat_id == chat_id,
+                        Message.message_id == message_id
+                    ).values(**message_data)
+                    await session.execute(stmt)
+                    await session.commit()
+                except Exception as e:
+                    logger.error(f"Error in db_writer: {e}")
+                    await session.rollback()
                 
             # Mark task as done
             message_queue.task_done()
             
         except Exception as e:
-            print(f"Error in db_writer: {e}")
+            logger.error(f"Error in db_writer: {e}")
             # Still mark as done to avoid blocking the queue
             message_queue.task_done()
             
