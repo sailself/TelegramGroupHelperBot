@@ -28,6 +28,7 @@ from bot.handlers import (
     q_handler,
     start_handler,
     tldr_handler,
+    img_handler,
 )
 
 # Configure logging
@@ -57,6 +58,7 @@ def main():
     application.add_handler(CommandHandler("tldr", tldr_handler))
     application.add_handler(CommandHandler("factcheck", factcheck_handler))
     application.add_handler(CommandHandler("q", q_handler))
+    application.add_handler(CommandHandler("img", img_handler))
     
     # Add a message handler to log all messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))

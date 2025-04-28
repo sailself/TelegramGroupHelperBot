@@ -31,7 +31,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_URL
 )
 from bot.db.database import select_messages, queue_message_insert
-from bot.llm import call_gemini, stream_gemini
+from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini
 
 # Configure logging
 logging.basicConfig(
@@ -429,7 +429,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Format the system prompt with the current date
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_datetime=current_datetime)
-        use_pro_model=True
+        use_pro_model=False
         # Get response from Gemini with fact checking, using the detected language
         response_queue = await stream_gemini(
             system_prompt=system_prompt,
@@ -599,6 +599,163 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception:
             pass
 
+async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler for the /img command.
+    
+    This command uses Gemini to generate or edit an image based on the provided text.
+    It can accept text or text with a reply to an image.
+    
+    Args:
+        update: The update containing the message.
+        context: The context object.
+    """
+    if update.effective_user is None or update.effective_message is None:
+        return
+
+    user_id = update.effective_user.id
+    
+    # Check rate limiting
+    if is_rate_limited(user_id):
+        await update.effective_message.reply_text(
+            "You're sending commands too quickly. Please wait a moment before trying again."
+        )
+        return
+
+    # Get message text without the command
+    message_text = update.effective_message.text or ""
+    if message_text.startswith("/img"):
+        prompt = message_text[4:].strip()
+    else:
+        prompt = ""
+
+    if not prompt:
+        await update.effective_message.reply_text(
+            "Please provide a description of the image you want to generate or edit. "
+            "For example: /img a cat playing piano"
+        )
+        return
+
+    # Get potential image from a replied message
+    replied_message = update.effective_message.reply_to_message
+    image_url = None
+    
+    if replied_message and replied_message.photo:
+        # Get the largest photo (last in the array)
+        photo = replied_message.photo[-1]
+        photo_file = await context.bot.get_file(photo.file_id)
+        image_url = photo_file.file_path
+
+    # Send a processing message
+    processing_message = await update.effective_message.reply_text(
+        "Processing your image request... This may take a moment."
+    )
+    
+    try:
+        # Keep system prompt simple
+        system_prompt = "Generate an image based on the description."
+        
+        # Log if this is a generation or editing request
+        if image_url:
+            logger.info(f"Processing image edit request: '{prompt}'")
+        else:
+            logger.info(f"Processing image generation request: '{prompt}'")
+        
+        # Generate the image using Gemini
+        image_data = await generate_image_with_gemini(
+            system_prompt=system_prompt,
+            prompt=prompt,
+            input_image_url=image_url
+        )
+        
+        if image_data:
+            # Send the generated image
+            try:
+                # Convert bytes to BytesIO for Telegram
+                from io import BytesIO
+                image_io = BytesIO(image_data)
+                image_io.name = 'generated_image.jpg'
+                
+                # Try to send the image
+                try:
+                    await context.bot.send_photo(
+                        chat_id=update.effective_chat.id,
+                        photo=image_io,
+                        caption=f"Generated image based on: {prompt[:200]}..." if len(prompt) > 200 else f"Generated image based on: {prompt}"
+                    )
+                    await processing_message.delete()
+                except Exception as send_error:
+                    logger.error(f"Error sending image via Telegram: {send_error}", exc_info=True)
+                    
+                    # Save the image to disk as a fallback for debugging
+                    try:
+                        import os
+                        from datetime import datetime
+                        
+                        # Create a logs/images directory if it doesn't exist
+                        os.makedirs("logs/images", exist_ok=True)
+                        
+                        # Generate a unique filename based on timestamp
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        file_path = f"logs/images/image_{timestamp}.jpg"
+                        
+                        # Save the image
+                        with open(file_path, "wb") as f:
+                            f.write(image_data)
+                        
+                        logger.info(f"Saved problematic image to {file_path}")
+                        
+                        # Notify the user
+                        await processing_message.edit_text(
+                            "I generated an image but couldn't send it through Telegram. "
+                            "The image has been saved for debugging. Please try a different prompt."
+                        )
+                    except Exception as save_error:
+                        logger.error(f"Error saving image to disk: {save_error}", exc_info=True)
+                        await processing_message.edit_text(
+                            "Sorry, I generated an image but couldn't send it through Telegram. The image format might be incompatible."
+                        )
+            except Exception as e:
+                logger.error(f"Error sending image: {e}", exc_info=True)
+                await processing_message.edit_text(
+                    "Sorry, I generated an image but couldn't send it through Telegram. The image format might be incompatible."
+                )
+        else:
+            # Different messages for generation vs editing
+            if image_url:
+                await processing_message.edit_text(
+                    "I couldn't edit the image according to your request. The Gemini model may have limitations "
+                    "with image editing capabilities. Please try:\n"
+                    "1. Using a simpler edit description\n"
+                    "2. Providing more specific details\n"
+                    "3. Try a different type of edit or try again later"
+                )
+            else:
+                await processing_message.edit_text(
+                    "I couldn't generate an image based on your request. The Gemini model may have limitations with "
+                    "image generation capabilities. Please try:\n"
+                    "1. Using a simpler prompt\n"
+                    "2. Providing more specific details\n"
+                    "3. Try again later as model capabilities continue to improve"
+                )
+    except Exception as e:
+        logger.error(f"Error in img_handler: {e}", exc_info=True)
+        error_message = str(e).lower()
+        
+        if "not supported" in error_message or "unavailable" in error_message or "feature" in error_message:
+            await processing_message.edit_text(
+                "Sorry, image generation is not currently supported by the Gemini API. "
+                "This feature may be available in the future."
+            )
+        elif "image_process_failed" in error_message:
+            await processing_message.edit_text(
+                "Sorry, there was an issue processing the generated image. "
+                "Please try again with a different prompt or wait for a while before trying again."
+            )
+        else:
+            await processing_message.edit_text(
+                "Sorry, an error occurred while processing your image request. Please try again later."
+            )
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command.
 
@@ -632,15 +789,23 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_message is None or update.effective_chat is None:
         return
     
-    help_message = (
-        "Here's how you can use me:\n\n"
-        "• /tldr [number] - Summarize recent messages. You can specify how many messages to include.\n"
-        "  Example: `/tldr 20` will summarize the last 20 messages.\n\n"
-        "• /factcheck - Reply to a message or image to fact-check it.\n"
-        "  Example: Reply to any message or photo with `/factcheck` to verify its claims or analyze visual content.\n\n"
-        "• /q [question] - Ask me any question or analyze images.\n"
-        "  Example: `/q What is the capital of France?` or reply to an image with `/q What's in this picture?`\n\n"
-        "I'm powered by Google Gemini AI to provide accurate and helpful answers, including advanced image understanding capabilities."
-    )
-    
-    await update.effective_message.reply_text(help_message) 
+    help_text = """
+*TelegramGroupHelperBot Commands*
+
+/tldr - Summarize previous messages in the chat
+Usage: Reply to a message with `/tldr` to summarize all messages between that message and the present.
+
+/factcheck - Fact-check a statement or text
+Usage: `/factcheck [statement]` or reply to a message with `/factcheck`
+
+/q - Ask a question
+Usage: `/q [your question]`
+
+/img - Generate or edit an image using Gemini
+Usage: `/img [description]` for generating a new image
+Or reply to an image with `/img [description]` to edit that image
+
+/help - Show this help message
+"""
+
+    await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN) 

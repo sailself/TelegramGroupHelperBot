@@ -11,12 +11,14 @@ from typing import Dict, List, Optional, Union, Any
 import aiohttp
 from google import genai
 from google.genai import types
+from PIL import Image
 
 from bot.config import (
     GEMINI_API_KEY,
     GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
     GEMINI_PRO_MODEL,
+    GEMINI_IMAGE_MODEL,
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
@@ -54,10 +56,7 @@ _safety_settings = [
 
 logger.info(f"Using Gemini model: {GEMINI_MODEL}")
 
-# Define a multimodal model for image processing
-# Use one of the recommended models that support image understanding
-# GEMINI_VISION_MODEL = "gemini-2.0-flash"  # Supports images and is optimized for faster responses
-logger.info(f"Using vision model: {GEMINI_MODEL}")
+logger.info(f"Using Image model: {GEMINI_IMAGE_MODEL}")
 
 
 def detect_mime_type(image_data: bytes) -> str:
@@ -279,10 +278,18 @@ async def call_gemini_vision(
             config=config
         )
         
-        # Log the response details
+        # Log the response details for debugging
         logger.info(f"Vision response received. Has text: {hasattr(response, 'text')}")
         if hasattr(response, 'text') and response.text:
-            logger.info(f"Vision response text (first 100 chars): {response.text[:100]}...")
+            # Log the first part of the response for debugging
+            text_sample = response.text[:100] if len(response.text) > 100 else response.text
+            logger.info(f"Vision response text sample: {text_sample}")
+            
+            # Check if the response looks like a base64 string
+            if all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in text_sample):
+                logger.info("Response appears to be a valid base64 string")
+            else:
+                logger.warning("Response does not appear to be a base64 string, may contain explanation text")
         
         # Extract the text from the response
         return response.text.strip() if response.text else "No response generated from image analysis."
@@ -290,6 +297,155 @@ async def call_gemini_vision(
     except Exception as e:
         logger.error(f"Error calling Gemini Vision: {e}", exc_info=True)
         return f"Error processing image: {str(e)}"
+
+
+def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
+    """Extract and process a base64 encoded image from text response.
+    
+    Args:
+        text_response: The text response potentially containing a base64 encoded image.
+        
+    Returns:
+        The processed image as bytes, or None if extraction failed.
+    """
+    try:
+        # Log response information
+        logger.info(f"Response length: {len(text_response)} characters")
+        text_preview = text_response[:50] + "..." if len(text_response) > 50 else text_response
+        logger.info(f"Response preview: {text_preview}")
+        
+        # Check if the response is likely a text explanation rather than base64 data
+        # Common indicators include: "I'm sorry", "cannot", "unable", etc.
+        if any(phrase in text_response.lower() for phrase in ["sorry", "cannot", "unable", "don't", "doesn't", "can't", "error"]):
+            logger.warning(f"Response appears to be an explanation rather than image data: {text_response[:200]}...")
+            return None
+        
+        # Strip any markdown code block markers that might be present
+        base64_data = text_response.strip()
+        
+        # Check if the response contains text explanation instead of just a base64 image
+        if len(base64_data) > 10000 or "```" in base64_data or "base64," in base64_data:
+            # Extract content between code blocks if present
+            import re
+            
+            # Check for markdown code blocks
+            code_match = re.search(r'```(?:.*?)\n(.*?)```', base64_data, re.DOTALL)
+            if code_match:
+                base64_data = code_match.group(1).strip()
+                logger.info("Extracted base64 data from code block")
+            
+            # Check for data URI format (common in image responses)
+            data_uri_match = re.search(r'data:image/[^;]+;base64,([^"\'\\s]+)', base64_data)
+            if data_uri_match:
+                base64_data = data_uri_match.group(1).strip()
+                logger.info("Extracted base64 data from data URI format")
+                
+            # Check for JSON response with base64 field
+            json_match = re.search(r'"image":\s*"([A-Za-z0-9+/=]+)"', base64_data)
+            if json_match:
+                base64_data = json_match.group(1).strip()
+                logger.info("Extracted base64 data from JSON response")
+        
+        # Log statistics about the data quality
+        if base64_data:
+            # Basic validation - check character distribution for signs of text vs base64
+            valid_chars = set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+            invalid_chars = set(c for c in base64_data if c not in valid_chars)
+            
+            if invalid_chars:
+                logger.warning(f"Found invalid base64 characters: {invalid_chars}")
+                base64_data = ''.join(c for c in base64_data if c in valid_chars)
+            
+            # Log statistics
+            logger.info(f"Base64 data length: {len(base64_data)}")
+            logger.info(f"Base64 data looks valid: {all(c in valid_chars for c in base64_data)}")
+                
+        # Remove any non-base64 characters
+        base64_data = ''.join(c for c in base64_data if c in 
+                             'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=')
+        
+        # Clean the base64 data - remove any leading/trailing non-base64 content
+        # Find the longest valid base64 substring
+        base64_pattern = re.compile(r'[A-Za-z0-9+/=]+')
+        matches = base64_pattern.findall(base64_data)
+        if matches:
+            # Use the longest match
+            base64_data = max(matches, key=len)
+        
+        # Fix padding issues - ensure the length is a multiple of 4
+        remainder = len(base64_data) % 4
+        if remainder > 0:
+            # Add padding to make length multiple of 4
+            base64_data += '=' * (4 - remainder)
+        
+        # Try to decode the base64 data to binary
+        try:
+            image_bytes = base64.b64decode(base64_data)
+        except Exception as decode_error:
+            logger.error(f"Base64 decode error: {decode_error}. Trying with padding stripped.")
+            try:
+                # Try again with any padding stripped, then add back correct padding
+                base64_data = base64_data.rstrip('=')
+                remainder = len(base64_data) % 4
+                if remainder > 0:
+                    base64_data += '=' * (4 - remainder)
+                image_bytes = base64.b64decode(base64_data)
+            except Exception as e:
+                logger.error(f"Failed to decode base64 data after retry: {e}")
+                return None
+        
+        # Verify it's a valid image using PIL
+        try:
+            from PIL import Image
+            from io import BytesIO
+            
+            # Log the first few bytes to help with debugging
+            logger.info(f"First 20 bytes of decoded data: {image_bytes[:20]}")
+            
+            # Check if it's likely text rather than image data
+            is_probably_text = all(byte < 128 for byte in image_bytes[:100])
+            if is_probably_text:
+                text_sample = image_bytes[:100].decode('utf-8', errors='replace')
+                logger.error(f"Data appears to be text, not an image: {text_sample}...")
+                return None
+            
+            # Try to open the image with PIL to validate it
+            input_buffer = BytesIO(image_bytes)
+            img = Image.open(input_buffer)
+            
+            # Get the image format for logging
+            img_format = img.format
+            img_mode = img.mode
+            img_size = img.size
+            logger.info(f"Valid image detected: Format={img_format}, Mode={img_mode}, Size={img_size}")
+            
+            # Convert to RGB mode if it's not already (required for JPEG)
+            if img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # Save as JPEG to a new BytesIO object
+            output = BytesIO()
+            img.save(output, format='JPEG', quality=95)
+            output.seek(0)
+            
+            # Return the JPEG bytes
+            return output.getvalue()
+            
+        except Exception as img_error:
+            logger.error(f"Invalid image data: {img_error}")
+            
+            # Try to decode the data as text to see if the model returned an explanation
+            try:
+                if len(image_bytes) > 20:
+                    text_response = image_bytes.decode('utf-8', errors='replace')
+                    logger.info(f"Model returned text instead of image: {text_response[:200]}...")
+            except:
+                pass
+            
+            return None
+    except Exception as e:
+        logger.error(f"Error extracting image from text: {e}", exc_info=True)
+        return None
 
 
 async def stream_gemini(
@@ -408,7 +564,13 @@ async def stream_gemini(
             # Fall back to non-grounding streaming if grounding fails
             if use_search_grounding:
                 logger.info("Falling back to non-grounding streaming")
-                fallback_queue = await stream_gemini(system_prompt, user_content, response_language, False)
+                # Make sure to use the correct parameter order
+                fallback_queue = await stream_gemini(
+                    system_prompt=system_prompt,
+                    user_content=user_content,
+                    response_language=response_language,
+                    use_search_grounding=False
+                )
                 
                 # Transfer items from the fallback queue to our queue
                 while True:
@@ -461,6 +623,136 @@ async def test_gemini_vision(image_url: str) -> None:
         logger.error(f"Error in test_gemini_vision: {e}", exc_info=True)
         print(f"Error testing Gemini Vision: {str(e)}")
         return f"Error: {str(e)}"
+
+
+async def generate_image_with_gemini(
+    system_prompt: str,
+    prompt: str,
+    input_image_url: Optional[str] = None,
+) -> Optional[bytes]:
+    """Generate or edit an image using Gemini.
+    
+    Args:
+        system_prompt: The system prompt for the model.
+        prompt: The user's description of the desired image.
+        input_image_url: Optional URL to an image to edit.
+        
+    Returns:
+        The generated image as bytes, or None if generation failed.
+    """
+    logger.info(f"Generating image with prompt: {prompt[:100]}...")
+    
+    try:
+        # Keep the prompt simple as suggested
+        image_generation_prompt = prompt
+        
+        # If there's an input image, include it in the request
+        if input_image_url:
+            logger.info(f"Editing existing image from URL: {input_image_url}")
+            image_data = await download_image(input_image_url)
+            
+            if not image_data:
+                logger.error("Failed to download input image, proceeding with text-only generation")
+                input_image_url = None
+            else:
+                # Configure generation parameters
+                model = GEMINI_IMAGE_MODEL
+                config = types.GenerateContentConfig(
+                    response_modalities=['TEXT', 'IMAGE'],
+                    max_output_tokens=65535,
+                    safety_settings=_safety_settings
+                )
+                
+                # Determine MIME type from the image data
+                mime_type = detect_mime_type(image_data)
+                
+                # Create multipart model request with image and prompt
+                contents = [
+                    f"Edit this image: {prompt}",
+                    types.Part.from_bytes(data=image_data, mime_type=mime_type)
+                ]
+                
+                # Make the API call with both text and image
+                response = await asyncio.to_thread(
+                    client.models.generate_content,
+                    model=model,
+                    contents=contents,
+                    config=config
+                )
+        else:
+            # Text-only image generation
+            model = GEMINI_IMAGE_MODEL  # Use the specialized image model
+            config = types.GenerateContentConfig(
+                response_modalities=['TEXT', 'IMAGE'],
+                max_output_tokens=65535,
+                safety_settings=_safety_settings
+            )
+            
+            # Log the model being used
+            logger.info(f"Using model {model} for image generation")
+            
+            # Make the API call
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=image_generation_prompt,
+                config=config
+            )
+        
+        # Extract the image data from the response parts
+        logger.info(f"Response received. Candidates count: {len(response.candidates)}")
+        
+        for candidate in response.candidates:
+            if not hasattr(candidate, 'content') or not hasattr(candidate.content, 'parts'):
+                continue
+                
+            for part in candidate.content.parts:
+                # Check if the part has inline_data (image data)
+                if hasattr(part, 'inline_data') and part.inline_data is not None:
+                    logger.info(f"Found inline image data with mime type: {part.inline_data.mime_type}")
+                    
+                    # Convert the image data to bytes
+                    image_bytes = part.inline_data.data
+                    
+                    # Process the image with PIL to ensure it's valid and in the right format
+                    try:
+                        from PIL import Image
+                        from io import BytesIO
+                        
+                        # Open the image with PIL
+                        img = Image.open(BytesIO(image_bytes))
+                        
+                        # Convert to RGB mode if it's not already (required for JPEG)
+                        if img.mode != 'RGB':
+                            img = img.convert('RGB')
+                        
+                        # Save as JPEG to a new BytesIO object
+                        output = BytesIO()
+                        img.save(output, format='JPEG', quality=95)
+                        output.seek(0)
+                        
+                        # Return the JPEG bytes
+                        return output.getvalue()
+                    except Exception as img_error:
+                        logger.error(f"Error processing inline image data: {img_error}")
+                
+                # Check if part has text (might contain error messages)
+                if hasattr(part, 'text') and part.text:
+                    logger.info(f"Part has text: {part.text[:100]}")
+        
+        logger.error("No valid image data found in response")
+        return None
+            
+    except Exception as e:
+        logger.error(f"Error generating image with Gemini: {e}", exc_info=True)
+        
+        # Check for specific API errors
+        error_message = str(e).lower()
+        if "not supported" in error_message or "unavailable" in error_message or "feature" in error_message:
+            logger.error("Gemini API does not support image generation capability")
+            # You might want to use a fallback service or inform the user more specifically
+        
+        return None
 
 
 # Example usage of the test function (uncomment to run)
