@@ -90,7 +90,7 @@ TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "")
 TLDR_SYSTEM_PROMPT = """你是一个中文助手，请用中文总结以下群聊内容。
 请先汇总出群聊主要内容。
 再依据发言数量依次列出主要发言用户的名字和观点但不要超过10位用户。
-严格限制字数在 500 字以内。
+请尽量详细地表述每个人的对各个议题的观点和陈述，字数不限。
 """
 # Prompt for fact checking
 FACTCHECK_SYSTEM_PROMPT = """You are an expert fact-checker that is unbiased, honest, and direct. \

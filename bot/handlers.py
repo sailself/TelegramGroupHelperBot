@@ -299,8 +299,8 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
 
     try:
-        # Default to 10 messages if no number is provided
-        count = 10
+        # Default to 100 messages if no number is provided
+        count = 100
         
         if context.args and len(context.args) > 0:
             try:
@@ -308,13 +308,13 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 
                 # Ensure count is reasonable
                 if count < 1:
-                    count = 10
+                    count = 100
                 elif count > 500:
                     count = 500
                     
             except ValueError:
-                # If the argument is not a valid number, default to 10
-                count = 10
+                # If the argument is not a valid number, default to 100
+                count = 100
         
         # Send a "processing" message
         processing_message = await update.effective_message.reply_text(
@@ -680,7 +680,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     await context.bot.send_photo(
                         chat_id=update.effective_chat.id,
                         photo=image_io,
-                        caption=f"Generated image based on: {prompt[:200]}..." if len(prompt) > 200 else f"Generated image based on: {prompt}"
+                        caption=f"Image generated, hope you like it."
                     )
                     await processing_message.delete()
                 except Exception as send_error:
@@ -772,6 +772,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /tldr [number] - Summarize recent messages (default: 10)\n"
         "• /factcheck - Reply to a message or image to fact-check it\n"
         "• /q [question] - Ask me any question or analyze images\n"
+        "• /img [description] - Generate or edit an image using Gemini\n"
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
@@ -790,22 +791,22 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         return
     
     help_text = """
-*TelegramGroupHelperBot Commands*
+    *TelegramGroupHelperBot Commands*
 
-/tldr - Summarize previous messages in the chat
-Usage: Reply to a message with `/tldr` to summarize all messages between that message and the present.
+    /tldr - Summarize previous messages in the chat
+    Usage: Reply to a message with `/tldr` to summarize all messages between that message and the present.
 
-/factcheck - Fact-check a statement or text
-Usage: `/factcheck [statement]` or reply to a message with `/factcheck`
+    /factcheck - Fact-check a statement or text
+    Usage: `/factcheck [statement]` or reply to a message with `/factcheck`
 
-/q - Ask a question
-Usage: `/q [your question]`
+    /q - Ask a question
+    Usage: `/q [your question]`
 
-/img - Generate or edit an image using Gemini
-Usage: `/img [description]` for generating a new image
-Or reply to an image with `/img [description]` to edit that image
+    /img - Generate or edit an image using Gemini
+    Usage: `/img [description]` for generating a new image
+    Or reply to an image with `/img [description]` to edit that image
 
-/help - Show this help message
-"""
+    /help - Show this help message
+    """
 
     await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN) 
