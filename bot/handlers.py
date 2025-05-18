@@ -30,7 +30,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL
 )
-from bot.db.database import select_messages, queue_message_insert
+from bot.db.database import select_messages, queue_message_insert, select_messages_from_id
 from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini
 
 # Configure logging
@@ -320,9 +320,12 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         processing_message = await update.effective_message.reply_text(
             "Summarizing recent messages..."
         )
+
+        from_message_id = update.effective_message.message_id - count
         
         # Fetch recent messages
-        messages = await select_messages(chat_id=update.effective_chat.id, limit=count)
+        # messages = await select_messages(chat_id=update.effective_chat.id, limit=count)
+        messages = await select_messages_from_id(chat_id=update.effective_chat.id, message_id=from_message_id)
         
         if not messages or len(messages) == 0:
             await processing_message.edit_text("No messages found to summarize.")

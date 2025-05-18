@@ -118,6 +118,47 @@ async def get_last_n_text_messages(
             logger.error(f"Error retrieving messages: {e}")
             # Return empty list on error
             return []
+        
+async def get_messages_from_id(
+    chat_id: int, from_message_id: int, exclude_commands: bool = True
+) -> List[Message]:
+    """Get the all the text messages from a chat begin with specific message id.
+    
+    Args:
+        chat_id: The ID of the chat.
+        from_message_id: The ID of the messages that begin with.
+        exclude_commands: Whether to exclude command messages.
+        
+    Returns:
+        A list of Message objects.
+    """
+    async with get_session() as session:
+        try:
+            # Build the base query
+            stmt = (
+                sa_select(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.text.isnot(None))
+                .where(Message.message_id >= from_message_id)
+            )
+            
+            # Add command filtering if needed
+            if exclude_commands:
+                stmt = stmt.where(~Message.text.startswith("/"))
+            
+            # Order and limit
+            stmt = stmt.order_by(Message.date.desc())
+            
+            # Execute query
+            result = await session.execute(stmt)
+            messages = result.scalars().all()
+                
+            # Return in chronological order
+            return list(reversed(messages))
+        except Exception as e:
+            logger.error(f"Error retrieving messages: {e}")
+            # Return empty list on error
+            return []
 
 
 async def db_writer() -> None:
@@ -231,3 +272,15 @@ async def select_messages(chat_id: int, limit: int = 10) -> List[Message]:
         A list of Message objects.
     """
     return await get_last_n_text_messages(chat_id, limit) 
+
+async def select_messages_from_id(chat_id: int, message_id: int) -> List[Message]:
+    """Select messages from the database.
+    
+    Args:
+        chat_id: The ID of the chat.
+        message_id: The message id to begin with.
+        
+    Returns:
+        A list of Message objects.
+    """
+    return await get_messages_from_id(chat_id, message_id)
