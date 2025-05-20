@@ -15,7 +15,7 @@ import langid
 import requests
 from bs4 import BeautifulSoup
 from html2text import html2text
-from telegram import Update
+from telegram import Update, InputMediaPhoto
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
@@ -680,12 +680,13 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 
                 # Try to send the image
                 try:
-                    await context.bot.send_photo(
-                        chat_id=update.effective_chat.id,
-                        photo=image_io,
-                        caption=f"Image generated, hope you like it."
-                    )
-                    await processing_message.delete()
+                    # await context.bot.send_photo(
+                    #     chat_id=update.effective_chat.id,
+                    #     photo=image_io,
+                    #     caption=f"Image generated, hope you like it."
+                    # )
+                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption=f"Image generated, hope you like it."))
+                    # await processing_message.edit_text("Image generated, hope you like it.")
                 except Exception as send_error:
                     logger.error(f"Error sending image via Telegram: {send_error}", exc_info=True)
                     
