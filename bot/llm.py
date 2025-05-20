@@ -117,6 +117,8 @@ async def call_gemini(
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
     image_data_list: Optional[List[bytes]] = None,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
 ) -> str:
     """Call the Gemini API with the given prompts.
     
@@ -144,34 +146,50 @@ async def call_gemini(
     combined_prompt = f"{system_prompt}\n\n{user_content}"
     
     try:
-        # Handle image data if provided
-        if image_data_list:
+        if video_data and video_mime_type:
+            logger.info(f"Processing with provided video data (MIME: {video_mime_type}).")
+            return await call_gemini_vision(
+                system_prompt=system_prompt,
+                user_content=user_content,
+                video_data=video_data,
+                video_mime_type=video_mime_type,
+                image_data_list=None, # Ensure images are not processed if video is present
+                use_search_grounding=use_search_grounding,
+                response_language=response_language,
+                use_pro_model=use_pro_model
+            )
+        elif image_data_list:
             logger.info(f"Processing with {len(image_data_list)} provided image(s).")
             return await call_gemini_vision(
                 system_prompt=system_prompt,
                 user_content=user_content,
                 image_data_list=image_data_list,
+                video_data=None, # Ensure video is not processed
+                video_mime_type=None,
                 use_search_grounding=use_search_grounding,
                 response_language=response_language,
                 use_pro_model=use_pro_model
             )
-        elif image_url: # Else, if a single image URL is provided, download and process it
+        elif image_url: 
             logger.info(f"Processing with single image URL: {image_url}")
-            image_data = await download_media(image_url) # Changed to download_media
-            if not image_data:
+            media_data = await download_media(image_url)
+            if not media_data:
                 logger.error("Failed to download media from URL, proceeding with text only")
+                 # Proceed to text-only call by falling through
             else:
                 # Process with the vision model, passing the single image as a list
                 return await call_gemini_vision(
                     system_prompt=system_prompt,
                     user_content=user_content,
-                    image_data_list=[image_data],
+                    image_data_list=[media_data],
+                    video_data=None, # Ensure video is not processed
+                    video_mime_type=None,
                     use_search_grounding=use_search_grounding,
                     response_language=response_language,
                     use_pro_model=use_pro_model
                 )
 
-        # If no images, proceed with text-only call
+        # If no media (video, image_data_list, or downloadable image_url), proceed with text-only call
         logger.info("Proceeding with text-only Gemini call.")
         config = {
             "temperature": GEMINI_TEMPERATURE,
@@ -211,21 +229,18 @@ async def call_gemini(
     except Exception as e:
         logger.error(f"Error calling Gemini: {e}", exc_info=True)
         # Fall back to non-grounding call if grounding fails
-        # Ensure image_data_list is also None for the fallback condition
-        if use_search_grounding and not image_url and not image_data_list:
+        if use_search_grounding and not (video_data or image_data_list or image_url): # Fallback for text-only
             logger.info("Falling back to non-grounding call for text-only request.")
             return await call_gemini(
                 system_prompt=system_prompt, 
                 user_content=user_content, 
                 response_language=response_language, 
                 use_search_grounding=False, 
-                use_pro_model=use_pro_model # Retain pro_model choice
+                use_pro_model=use_pro_model, # Retain pro_model choice
+                video_data=None, video_mime_type=None, image_data_list=None, image_url=None # Ensure no media in fallback
             )
-        elif use_search_grounding and (image_url or image_data_list):
-             # If grounding failed with an image, we might not want to retry without grounding
-             # or this part of the logic needs to be re-evaluated for image-related fallbacks.
-             # For now, re-raising.
-            logger.warning("Grounding failed with an image. Re-raising the exception as fallback for image with no grounding is not defined.")
+        elif use_search_grounding and (video_data or image_data_list or image_url):
+            logger.warning("Grounding failed with media. Re-raising the exception as fallback for media with no grounding is not defined.")
             raise
         else: # Non-grounding call failed, or other error
             raise  # Re-raise the exception
