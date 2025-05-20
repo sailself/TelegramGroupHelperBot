@@ -495,6 +495,8 @@ async def stream_gemini(
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
     image_data_list: Optional[List[bytes]] = None,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
 ) -> asyncio.Queue:
     """Stream the Gemini API response.
     
@@ -512,24 +514,36 @@ async def stream_gemini(
     # Create a queue to store response chunks
     queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
     
-    # If we have image_data_list or an image_url, we can't truly stream the vision model's response.
-    # We'll get the full response from call_gemini_vision and put it in the queue.
-    if image_data_list or image_url:
+    # If we have video, image_data_list, or an image_url, we can't truly stream the vision model's response.
+    # We'll get the full response from call_gemini_vision (or call_gemini for URL) and put it in the queue.
+    if video_data or image_data_list or image_url:
         try:
-            if image_data_list:
+            if video_data and video_mime_type:
+                logger.info(f"Stream mode: Processing with provided video data (MIME: {video_mime_type}).")
+                response = await call_gemini_vision(
+                    system_prompt=system_prompt,
+                    user_content=user_content,
+                    video_data=video_data,
+                    video_mime_type=video_mime_type,
+                    image_data_list=None, # Prioritize video
+                    use_search_grounding=use_search_grounding,
+                    response_language=response_language,
+                    use_pro_model=use_pro_model
+                )
+            elif image_data_list:
                 logger.info(f"Stream mode: Processing with {len(image_data_list)} provided image(s).")
-                # Directly call call_gemini_vision since we have the image data list
                 response = await call_gemini_vision(
                     system_prompt=system_prompt,
                     user_content=user_content,
                     image_data_list=image_data_list,
+                    video_data=None, # No video
+                    video_mime_type=None,
                     use_search_grounding=use_search_grounding,
                     response_language=response_language,
                     use_pro_model=use_pro_model
                 )
             elif image_url: 
                 logger.info(f"Stream mode: Processing with single image URL: {image_url}")
-                # call_gemini handles download and then calls call_gemini_vision
                 response = await call_gemini( 
                     system_prompt=system_prompt,
                     user_content=user_content,
@@ -537,24 +551,28 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     image_url=image_url, 
                     use_pro_model=use_pro_model,
-                    # image_data_list is None here, so call_gemini will use image_url
+                    # Pass None for direct media data as call_gemini handles URL download
+                    image_data_list=None, 
+                    video_data=None,
+                    video_mime_type=None
                 )
-            # Removed 'else' block that set response to "Error..." as it should be covered by image_data_list or image_url
-            # else: 
-            #     response = "Error: stream_gemini called with image flags but no image data."
-                response = "Error: stream_gemini called with image flags but no image data."
+            else: # Should ideally not be reached if the outer 'if' is true.
+                 response = "Error: stream_gemini logic error in media handling."
+
 
             await queue.put(response)
             await queue.put(None) # Signal end of stream
             return queue
             
         except Exception as e:
-            logger.error(f"Error in stream_gemini with image(s): {e}", exc_info=True)
-            error_msg = f"Error processing image(s): {str(e)}"
-            if image_data_list:
+            logger.error(f"Error in stream_gemini with media (video/image): {e}", exc_info=True)
+            error_msg = f"Error processing media: {str(e)}"
+            if video_data:
+                error_msg = f"Error processing video: {str(e)}"
+            elif image_data_list:
                 error_msg = f"Error processing {len(image_data_list)} image(s): {str(e)}"
             elif image_url:
-                 error_msg = f"Error processing image from URL: {str(e)}"
+                 error_msg = f"Error processing media from URL: {str(e)}"
             await queue.put(error_msg)
             await queue.put(None)
             return queue
@@ -621,15 +639,19 @@ async def stream_gemini(
         except Exception as e:
             logger.error(f"Error in stream_worker: {e}", exc_info=True)
             # Fall back to non-grounding streaming if grounding fails (text-only scenario)
-            if use_search_grounding: # This implies not image_data_list and not image_url due to logic above
+            if use_search_grounding: # This implies no media due to logic above
                 logger.info("Falling back to non-grounding text-only streaming")
                 fallback_queue = await stream_gemini(
                     system_prompt=system_prompt,
-                    user_content=user_content, # Original user_content, not combined_prompt
+                    user_content=user_content, 
                     response_language=response_language,
-                    use_search_grounding=False, # Explicitly disable grounding
-                    use_pro_model=use_pro_model # Retain pro_model choice
-                    # image_data_list and image_url are implicitly None here
+                    use_search_grounding=False, 
+                    use_pro_model=use_pro_model,
+                    # Ensure no media parameters are passed in fallback text-only call
+                    image_url=None,
+                    image_data_list=None,
+                    video_data=None,
+                    video_mime_type=None
                 )
                 # Transfer items from the fallback queue to our queue
                 while True:
