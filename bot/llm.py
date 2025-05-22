@@ -19,6 +19,7 @@ from bot.config import (
     GEMINI_MODEL,
     GEMINI_PRO_MODEL,
     GEMINI_IMAGE_MODEL,
+    GEMINI_VIDEO_MODEL,
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
@@ -57,6 +58,7 @@ _safety_settings = [
 logger.info(f"Using Gemini model: {GEMINI_MODEL}")
 logger.info(f"Using Gemini Pro model: {GEMINI_PRO_MODEL}")
 logger.info(f"Using Image model: {GEMINI_IMAGE_MODEL}")
+logger.info(f"Using Video model: {GEMINI_VIDEO_MODEL}")
 
 
 def detect_mime_type(image_data: bytes) -> str:
@@ -884,3 +886,108 @@ async def generate_image_with_gemini(
 #         asyncio.run(test_gemini_vision(image_url))
 #     else:
 #         print("Please provide an image URL as an argument") 
+
+
+async def generate_video_with_veo(
+    system_prompt: str, 
+    user_prompt: str, 
+    image_data: Optional[bytes] = None
+) -> tuple[Optional[bytes], Optional[str]]:
+    """Generate video using Gemini VEO model.
+
+    Args:
+        system_prompt: The system prompt for the model.
+        user_prompt: The user's description of the desired video.
+        image_data: Optional image data to include in the generation.
+
+    Returns:
+        A tuple containing the video bytes and its MIME type, or (None, None) if generation failed.
+    """
+    logger.info(f"Generating video with VEO model: {GEMINI_VIDEO_MODEL}")
+    logger.info(f"System prompt: {system_prompt[:100]}...")
+    logger.info(f"User prompt: {user_prompt[:100]}...")
+    if image_data:
+        logger.info(f"Image data provided: {len(image_data)} bytes")
+    else:
+        logger.info("No image data provided.")
+
+    contents = [system_prompt, user_prompt]
+    if image_data:
+        try:
+            mime_type = detect_mime_type(image_data)
+            if not mime_type.startswith("image/"):
+                logger.error(f"Invalid MIME type for image_data: {mime_type}. Skipping image.")
+            else:
+                contents.append(types.Part.from_bytes(data=image_data, mime_type=mime_type))
+        except Exception as e:
+            logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
+
+    try:
+        generation_config = types.GenerateContentConfig(
+            response_modalities=['VIDEO'], # This is a guess for VEO, might need adjustment
+            max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS, # VEO might have specific token limits
+            temperature=GEMINI_TEMPERATURE,
+            top_p=GEMINI_TOP_P,
+            top_k=GEMINI_TOP_K,
+        )
+        
+        # Safety settings are passed separately to the generate_content call
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=GEMINI_VIDEO_MODEL,
+            contents=contents,
+            generation_config=generation_config,
+            safety_settings=_safety_settings 
+        )
+
+        logger.info(f"VEO response received. Candidates count: {len(response.candidates)}")
+
+        for candidate in response.candidates:
+            if not hasattr(candidate, 'content') or not hasattr(candidate.content, 'parts'):
+                logger.debug("Candidate has no content or parts.")
+                continue
+                
+            for part in candidate.content.parts:
+                # Prioritize inline_data with video MIME type
+                if hasattr(part, 'inline_data') and part.inline_data and hasattr(part.inline_data, 'mime_type'):
+                    mime_type = part.inline_data.mime_type
+                    logger.info(f"Found part with inline_data, MIME type: {mime_type}")
+                    if mime_type.startswith("video/"):
+                        video_bytes = part.inline_data.data
+                        logger.info(f"Extracted video data: {len(video_bytes)} bytes, MIME type: {mime_type}")
+                        return video_bytes, mime_type
+                    else:
+                        logger.debug(f"Part has inline_data but not a video MIME type: {mime_type}")
+                
+                # Check for part.video_metadata as a potential alternative (as per initial guess)
+                # This part is speculative as the exact API structure for VEO video is not confirmed.
+                # If `inline_data` with a video MIME type is the standard, this might not be hit.
+                elif hasattr(part, 'video_metadata') and part.video_metadata:
+                    logger.info(f"Found part with video_metadata: {part.video_metadata}")
+                    # The actual video data might be in another part or need a separate fetch.
+                    # This block would need to be adapted based on how `video_metadata` relates to the video bytes.
+                    # For now, if we hit this, it means inline_data wasn't found, so we log and continue.
+                    # If VEO uses `file_data` like some other Gemini modalities for large files:
+                    if hasattr(part, 'file_data') and part.file_data and hasattr(part.file_data, 'mime_type'):
+                        if part.file_data.mime_type.startswith("video/"):
+                            # This implies video is not inline and needs to be fetched from part.file_data.file_uri
+                            # This is not directly supported by returning bytes here.
+                            # For now, we'll log this case.
+                            logger.warning(f"Found video metadata with file_data (URI: {part.file_data.file_uri}). "
+                                           "Fetching URI-based video not implemented in this function.")
+                            # To implement this, one would need to download from the file_uri.
+                            # For now, we treat it as video not directly available as bytes.
+
+                elif hasattr(part, 'text') and part.text:
+                    logger.info(f"Part has text: {part.text[:100]}")
+            
+        logger.error("No video data found in VEO response.")
+        return None, None
+
+    except Exception as e:
+        logger.error(f"Error generating video with VEO: {e}", exc_info=True)
+        # Specific error handling for VEO if known errors arise can be added here.
+        # For example, if 'VIDEO' modality is wrong:
+        if "modality" in str(e).lower():
+            logger.error("Potential issue with 'VIDEO' response modality. Check VEO documentation.")
+        return None, None

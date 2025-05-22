@@ -29,7 +29,8 @@ from bot.config import (
     TELEGRAPH_AUTHOR_URL
 )
 from bot.db.database import select_messages, queue_message_insert, select_messages_from_id
-from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini, download_media
+from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini, download_media, generate_video_with_veo
+from io import BytesIO
 
 # Configure logging
 logging.basicConfig(
@@ -855,6 +856,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /factcheck - Reply to a message or image to fact-check it\n"
         "• /q [question] - Ask me any question or analyze images\n"
         "• /img [description] - Generate or edit an image using Gemini\n"
+        "• /vid [prompt] - Generate a video based on text and/or a replied-to image.\n"
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
@@ -887,6 +889,10 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     /img - Generate or edit an image using Gemini
     Usage: `/img [description]` for generating a new image
     Or reply to an image with `/img [description]` to edit that image
+
+    /vid - Generate a video
+    Usage: `/vid [text prompt]` (optionally reply to an image)
+    Or: `/vid` (replying to an image with an optional text prompt in the caption or command)
 
     /help - Show this help message
     """
