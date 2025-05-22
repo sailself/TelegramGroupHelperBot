@@ -2,9 +2,7 @@
 
 import json
 import logging
-import re
 import time
-import uuid
 from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
@@ -30,7 +28,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL
 )
-from bot.db.database import select_messages, queue_message_insert, select_messages_from_id, select_messages_by_media_group_id
+from bot.db.database import select_messages, queue_message_insert, select_messages_from_id
 from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini, download_media
 
 # Configure logging
@@ -498,7 +496,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             image_data_list=image_data_list if image_data_list else None,
             video_data=video_data,
             video_mime_type=video_mime_type,
-            use_pro_model=use_pro_model
+            use_pro_model=True
         )
         
         # Process the streamed response

@@ -55,7 +55,7 @@ _safety_settings = [
 ]
 
 logger.info(f"Using Gemini model: {GEMINI_MODEL}")
-
+logger.info(f"Using Gemini Pro model: {GEMINI_PRO_MODEL}")
 logger.info(f"Using Image model: {GEMINI_IMAGE_MODEL}")
 
 
@@ -114,6 +114,7 @@ async def call_gemini(
     user_content: str,
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
+    use_url_context: bool = False,
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
     image_data_list: Optional[List[bytes]] = None,
@@ -127,8 +128,12 @@ async def call_gemini(
         user_content: The user content.
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
+        use_url_context: Whether to use URL Context.
         image_url: Optional URL to an image to include in the query.
         use_pro_model: Whether to use Gemini Pro model.
+        image_data_list: Optional list of image data as bytes.
+        video_data: Optional video data as bytes.
+        video_mime_type: Optional MIME type for the video data.
         
     Returns:
         The model's response.
@@ -155,6 +160,7 @@ async def call_gemini(
                 video_mime_type=video_mime_type,
                 image_data_list=None, # Ensure images are not processed if video is present
                 use_search_grounding=use_search_grounding,
+                use_url_context=use_url_context,
                 response_language=response_language,
                 use_pro_model=use_pro_model
             )
@@ -167,6 +173,7 @@ async def call_gemini(
                 video_data=None, # Ensure video is not processed
                 video_mime_type=None,
                 use_search_grounding=use_search_grounding,
+                use_url_context=use_url_context,
                 response_language=response_language,
                 use_pro_model=use_pro_model
             )
@@ -185,6 +192,7 @@ async def call_gemini(
                     video_data=None, # Ensure video is not processed
                     video_mime_type=None,
                     use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
                     response_language=response_language,
                     use_pro_model=use_pro_model
                 )
@@ -200,9 +208,16 @@ async def call_gemini(
         }
         
         # Add search tool if enabled
+        # Build the tools list based on enabled features
+        tools = []
         if use_search_grounding:
-            config["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
             logger.info("Using Google Search Grounding for this request")
+        if use_url_context:
+            tools.append({"url_context": {}})
+            logger.info("Using URL Context for this request")
+        if tools:
+            config["tools"] = tools
         
         model = GEMINI_MODEL
         if use_pro_model:
@@ -236,6 +251,7 @@ async def call_gemini(
                 user_content=user_content, 
                 response_language=response_language, 
                 use_search_grounding=False, 
+                use_url_context=use_url_context,
                 use_pro_model=use_pro_model, # Retain pro_model choice
                 video_data=None, video_mime_type=None, image_data_list=None, image_url=None # Ensure no media in fallback
             )
@@ -251,6 +267,7 @@ async def call_gemini_vision(
     user_content: str,
     image_data_list: Optional[List[bytes]] = None,
     use_search_grounding: bool = True,
+    use_url_context: bool = True,
     response_language: Optional[str] = None,
     use_pro_model: bool = False,
     video_data: Optional[bytes] = None,
@@ -263,6 +280,7 @@ async def call_gemini_vision(
         user_content: The user content.
         image_data_list: Optional list of image data as bytes.
         use_search_grounding: Whether to use Google Search Grounding.
+        use_url_context: Whether to use URL Context.
         response_language: The language to respond in, if specified.
         use_pro_model: Whether to use Gemini Pro model.
         video_data: Optional video data as bytes.
@@ -289,9 +307,15 @@ async def call_gemini_vision(
         }
 
         # Add search tool if enabled
+        tools = []
         if use_search_grounding:
-            config["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
             logger.info("Using Google Search Grounding for this request")
+        if use_url_context:
+            tools.append({"url_context": {}})
+            logger.info("Using URL Context for this request")
+        if tools:
+            config["tools"] = tools
         
         # Create the content parts for the request
         contents = [combined_prompt]
@@ -492,6 +516,7 @@ async def stream_gemini(
     user_content: str,
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
+    use_url_context: bool = True,
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
     image_data_list: Optional[List[bytes]] = None,
@@ -505,8 +530,12 @@ async def stream_gemini(
         user_content: The user content.
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
+        use_url_context: Whether to use URL Context.
         image_url: Optional URL to an image to include in the query.
         use_pro_model: Whether to use Gemini Pro model.
+        image_data_list: Optional list of image data as bytes.
+        video_data: Optional video data as bytes.
+        video_mime_type: Optional MIME type for the video data.
         
     Returns:
         A queue of response chunks.
@@ -527,6 +556,7 @@ async def stream_gemini(
                     video_mime_type=video_mime_type,
                     image_data_list=None, # Prioritize video
                     use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
                     response_language=response_language,
                     use_pro_model=use_pro_model
                 )
@@ -539,6 +569,7 @@ async def stream_gemini(
                     video_data=None, # No video
                     video_mime_type=None,
                     use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
                     response_language=response_language,
                     use_pro_model=use_pro_model
                 )
@@ -549,6 +580,7 @@ async def stream_gemini(
                     user_content=user_content,
                     response_language=response_language,
                     use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
                     image_url=image_url, 
                     use_pro_model=use_pro_model,
                     # Pass None for direct media data as call_gemini handles URL download
@@ -602,9 +634,16 @@ async def stream_gemini(
             }
             
             # Add search tool if enabled
+            # Refactored tool selection logic
+            tools = []
             if use_search_grounding:
-                config["tools"] = [{"google_search": {}}]
+                tools.append({"google_search": {}})
                 logger.info("Stream - Using Google Search Grounding")
+            if use_url_context:
+                tools.append({"url_context": {}})
+                logger.info("Stream - Using URL Context")
+            if tools:
+                config["tools"] = tools
             
             model = GEMINI_MODEL
             if use_pro_model:
@@ -646,6 +685,7 @@ async def stream_gemini(
                     user_content=user_content, 
                     response_language=response_language,
                     use_search_grounding=False, 
+                    use_url_context=use_url_context,
                     use_pro_model=use_pro_model,
                     # Ensure no media parameters are passed in fallback text-only call
                     image_url=None,
