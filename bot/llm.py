@@ -55,7 +55,7 @@ _safety_settings = [
 ]
 
 logger.info(f"Using Gemini model: {GEMINI_MODEL}")
-
+logger.info(f"Using Gemini Pro model: {GEMINI_PRO_MODEL}")
 logger.info(f"Using Image model: {GEMINI_IMAGE_MODEL}")
 
 
@@ -87,25 +87,25 @@ def detect_mime_type(image_data: bytes) -> str:
     return "image/jpeg"
 
 
-async def download_image(image_url: str) -> Optional[bytes]:
-    """Download an image from a URL.
+async def download_media(media_url: str) -> Optional[bytes]:
+    """Download a media file (image or video) from a URL.
     
     Args:
-        image_url: The URL of the image to download.
+        media_url: The URL of the media to download.
         
     Returns:
-        The image data as bytes, or None if the download failed.
+        The media data as bytes, or None if the download failed.
     """
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(image_url) as response:
+            async with session.get(media_url) as response:
                 if response.status == 200:
                     return await response.read()
                 else:
-                    logger.error(f"Failed to download image: {response.status}")
+                    logger.error(f"Failed to download media: {response.status} from {media_url}")
                     return None
     except Exception as e:
-        logger.error(f"Error downloading image: {e}")
+        logger.error(f"Error downloading media from {media_url}: {e}", exc_info=True)
         return None
 
 
@@ -114,8 +114,12 @@ async def call_gemini(
     user_content: str,
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
+    use_url_context: bool = False,
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
+    image_data_list: Optional[List[bytes]] = None,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
 ) -> str:
     """Call the Gemini API with the given prompts.
     
@@ -124,8 +128,12 @@ async def call_gemini(
         user_content: The user content.
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
+        use_url_context: Whether to use URL Context.
         image_url: Optional URL to an image to include in the query.
         use_pro_model: Whether to use Gemini Pro model.
+        image_data_list: Optional list of image data as bytes.
+        video_data: Optional video data as bytes.
+        video_mime_type: Optional MIME type for the video data.
         
     Returns:
         The model's response.
@@ -143,28 +151,54 @@ async def call_gemini(
     combined_prompt = f"{system_prompt}\n\n{user_content}"
     
     try:
-        # If an image URL is provided, use the vision model
-        if image_url:
-            logger.info(f"Processing with image: {image_url}")
-            
-            # Download the image
-            image_data = await download_image(image_url)
-            if not image_data:
-                logger.error("Failed to download image, proceeding with text only")
-                # Fall back to text-only if image download fails
-                image_url = None
+        if video_data and video_mime_type:
+            logger.info(f"Processing with provided video data (MIME: {video_mime_type}).")
+            return await call_gemini_vision(
+                system_prompt=system_prompt,
+                user_content=user_content,
+                video_data=video_data,
+                video_mime_type=video_mime_type,
+                image_data_list=None, # Ensure images are not processed if video is present
+                use_search_grounding=use_search_grounding,
+                use_url_context=use_url_context,
+                response_language=response_language,
+                use_pro_model=use_pro_model
+            )
+        elif image_data_list:
+            logger.info(f"Processing with {len(image_data_list)} provided image(s).")
+            return await call_gemini_vision(
+                system_prompt=system_prompt,
+                user_content=user_content,
+                image_data_list=image_data_list,
+                video_data=None, # Ensure video is not processed
+                video_mime_type=None,
+                use_search_grounding=use_search_grounding,
+                use_url_context=use_url_context,
+                response_language=response_language,
+                use_pro_model=use_pro_model
+            )
+        elif image_url: 
+            logger.info(f"Processing with single image URL: {image_url}")
+            media_data = await download_media(image_url)
+            if not media_data:
+                logger.error("Failed to download media from URL, proceeding with text only")
+                 # Proceed to text-only call by falling through
             else:
-                # Process with the vision model
+                # Process with the vision model, passing the single image as a list
                 return await call_gemini_vision(
-                    system_prompt=system_prompt, 
-                    user_content=user_content, 
-                    image_data=image_data,
+                    system_prompt=system_prompt,
+                    user_content=user_content,
+                    image_data_list=[media_data],
+                    video_data=None, # Ensure video is not processed
+                    video_mime_type=None,
                     use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
                     response_language=response_language,
                     use_pro_model=use_pro_model
                 )
-        
-        # Configure generation parameters
+
+        # If no media (video, image_data_list, or downloadable image_url), proceed with text-only call
+        logger.info("Proceeding with text-only Gemini call.")
         config = {
             "temperature": GEMINI_TEMPERATURE,
             "top_p": GEMINI_TOP_P,
@@ -174,9 +208,16 @@ async def call_gemini(
         }
         
         # Add search tool if enabled
+        # Build the tools list based on enabled features
+        tools = []
         if use_search_grounding:
-            config["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
             logger.info("Using Google Search Grounding for this request")
+        if use_url_context:
+            tools.append({"url_context": {}})
+            logger.info("Using URL Context for this request")
+        if tools:
+            config["tools"] = tools
         
         model = GEMINI_MODEL
         if use_pro_model:
@@ -203,30 +244,47 @@ async def call_gemini(
     except Exception as e:
         logger.error(f"Error calling Gemini: {e}", exc_info=True)
         # Fall back to non-grounding call if grounding fails
-        if use_search_grounding and not image_url:
-            logger.info("Falling back to non-grounding call")
-            return await call_gemini(system_prompt, user_content, response_language, False, False)
-        else:
+        if use_search_grounding and not (video_data or image_data_list or image_url): # Fallback for text-only
+            logger.info("Falling back to non-grounding call for text-only request.")
+            return await call_gemini(
+                system_prompt=system_prompt, 
+                user_content=user_content, 
+                response_language=response_language, 
+                use_search_grounding=False, 
+                use_url_context=use_url_context,
+                use_pro_model=use_pro_model, # Retain pro_model choice
+                video_data=None, video_mime_type=None, image_data_list=None, image_url=None # Ensure no media in fallback
+            )
+        elif use_search_grounding and (video_data or image_data_list or image_url):
+            logger.warning("Grounding failed with media. Re-raising the exception as fallback for media with no grounding is not defined.")
+            raise
+        else: # Non-grounding call failed, or other error
             raise  # Re-raise the exception
 
 
 async def call_gemini_vision(
     system_prompt: str,
     user_content: str,
-    image_data: bytes,
+    image_data_list: Optional[List[bytes]] = None,
     use_search_grounding: bool = True,
+    use_url_context: bool = True,
     response_language: Optional[str] = None,
     use_pro_model: bool = False,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
 ) -> str:
-    """Call the Gemini Vision API with text and image.
+    """Call the Gemini Vision API with text, and optionally image(s) or video.
     
     Args:
         system_prompt: The system prompt.
         user_content: The user content.
-        image_data: The image data as bytes.
+        image_data_list: Optional list of image data as bytes.
         use_search_grounding: Whether to use Google Search Grounding.
+        use_url_context: Whether to use URL Context.
         response_language: The language to respond in, if specified.
         use_pro_model: Whether to use Gemini Pro model.
+        video_data: Optional video data as bytes.
+        video_mime_type: Optional MIME type for the video data.
         
     Returns:
         The model's response.
@@ -235,10 +293,6 @@ async def call_gemini_vision(
         # Format the user content with language if specified
         if response_language:
             user_content += f"\n\nPlease reply in {response_language}."
-        
-        # Determine MIME type from the image data
-        mime_type = detect_mime_type(image_data)
-        logger.info(f"Detected image MIME type: {mime_type}")
         
         # Combine system prompt and user content
         combined_prompt = f"{system_prompt}\n\n{user_content}"
@@ -253,27 +307,42 @@ async def call_gemini_vision(
         }
 
         # Add search tool if enabled
+        tools = []
         if use_search_grounding:
-            config["tools"] = [{"google_search": {}}]
+            tools.append({"google_search": {}})
             logger.info("Using Google Search Grounding for this request")
+        if use_url_context:
+            tools.append({"url_context": {}})
+            logger.info("Using URL Context for this request")
+        if tools:
+            config["tools"] = tools
         
-        # Create the content parts for the request according to the API documentation
-        # First the text prompt, then the image
-        contents = [
-            combined_prompt,
-            types.Part.from_bytes(data=image_data, mime_type=mime_type)
-        ]
+        # Create the content parts for the request
+        contents = [combined_prompt]
+        log_media_info = "no media"
 
-        model = GEMINI_MODEL
-        if use_pro_model:
-            model = GEMINI_PRO_MODEL
-            logger.info("Using Pro model for Gemini Vision with image and text")
-        else:
-            logger.info("Using Standard model for Gemini Vision with image and text")
-        # Make the API call with both text and image using the client.models method
+        if video_data and video_mime_type:
+            logger.info(f"Processing with video data, MIME type: {video_mime_type}.")
+            if image_data_list and any(image_data_list): # check if list is not empty
+                logger.warning("Video data provided; image_data_list will be ignored as video takes precedence.")
+            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type)))
+            log_media_info = f"video ({video_mime_type})"
+        elif image_data_list and any(image_data_list): # check if list is not empty
+            logger.info(f"Processing with {len(image_data_list)} image(s).")
+            for img_data in image_data_list:
+                mime_type = detect_mime_type(img_data) 
+                logger.info(f"Detected image MIME type: {mime_type} for one of the images.")
+                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type))
+            log_media_info = f"{len(image_data_list)} image(s)"
+        
+        model_to_use = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
+        
+        logger.info(f"Using {'Pro' if use_pro_model else 'Standard'} model ({model_to_use}) for Gemini Vision with {log_media_info} and text")
+        
+        # Make the API call with text and media using the client.models method
         response = await asyncio.to_thread(
             client.models.generate_content,
-            model=model,
+            model=model_to_use,
             contents=contents,
             config=config
         )
@@ -281,25 +350,19 @@ async def call_gemini_vision(
         # Log the response details for debugging
         logger.info(f"Vision response received. Has text: {hasattr(response, 'text')}")
         if hasattr(response, 'text') and response.text:
-            # Log the first part of the response for debugging
             text_sample = response.text[:100] if len(response.text) > 100 else response.text
             logger.info(f"Vision response text sample: {text_sample}")
-            
-            # Check if the response looks like a base64 string
-            if all(c in 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=' for c in text_sample):
-                logger.info("Response appears to be a valid base64 string")
-            else:
-                logger.warning("Response does not appear to be a base64 string, may contain explanation text")
+            # Base64 check might be less relevant if typical responses are textual explanations for media.
         
         # Extract the text from the response
-        return response.text.strip() if response.text else "No response generated from image analysis."
+        return response.text.strip() if response.text else "No response generated from media analysis."
         
     except Exception as e:
-        logger.error(f"Error calling Gemini Vision: {e}", exc_info=True)
-        return f"Error processing image: {str(e)}"
+        logger.error(f"Error calling Gemini Vision with media: {e}", exc_info=True)
+        return f"Error processing media (image/video): {str(e)}"
 
 
-def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
+async def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
     """Extract and process a base64 encoded image from text response.
     
     Args:
@@ -382,7 +445,7 @@ def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
         try:
             image_bytes = base64.b64decode(base64_data)
         except Exception as decode_error:
-            logger.error(f"Base64 decode error: {decode_error}. Trying with padding stripped.")
+            logger.error(f"Base64 decode error: {decode_error}. Trying with padding stripped.", exc_info=True)
             try:
                 # Try again with any padding stripped, then add back correct padding
                 base64_data = base64_data.rstrip('=')
@@ -391,7 +454,7 @@ def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
                     base64_data += '=' * (4 - remainder)
                 image_bytes = base64.b64decode(base64_data)
             except Exception as e:
-                logger.error(f"Failed to decode base64 data after retry: {e}")
+                logger.error(f"Failed to decode base64 data after retry: {e}", exc_info=True)
                 return None
         
         # Verify it's a valid image using PIL
@@ -411,7 +474,7 @@ def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
             
             # Try to open the image with PIL to validate it
             input_buffer = BytesIO(image_bytes)
-            img = Image.open(input_buffer)
+            img = await asyncio.to_thread(Image.open, input_buffer)
             
             # Get the image format for logging
             img_format = img.format
@@ -421,18 +484,18 @@ def extract_and_process_image_from_text(text_response: str) -> Optional[bytes]:
             
             # Convert to RGB mode if it's not already (required for JPEG)
             if img.mode != 'RGB':
-                img = img.convert('RGB')
+                img = await asyncio.to_thread(img.convert, 'RGB')
             
             # Save as JPEG to a new BytesIO object
             output = BytesIO()
-            img.save(output, format='JPEG', quality=95)
+            await asyncio.to_thread(img.save, output, format='JPEG', quality=95)
             output.seek(0)
             
             # Return the JPEG bytes
             return output.getvalue()
             
         except Exception as img_error:
-            logger.error(f"Invalid image data: {img_error}")
+            logger.error(f"Invalid image data: {img_error}", exc_info=True)
             
             # Try to decode the data as text to see if the model returned an explanation
             try:
@@ -453,8 +516,12 @@ async def stream_gemini(
     user_content: str,
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
+    use_url_context: bool = True,
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
+    image_data_list: Optional[List[bytes]] = None,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
 ) -> asyncio.Queue:
     """Stream the Gemini API response.
     
@@ -463,8 +530,12 @@ async def stream_gemini(
         user_content: The user content.
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
+        use_url_context: Whether to use URL Context.
         image_url: Optional URL to an image to include in the query.
         use_pro_model: Whether to use Gemini Pro model.
+        image_data_list: Optional list of image data as bytes.
+        video_data: Optional video data as bytes.
+        video_mime_type: Optional MIME type for the video data.
         
     Returns:
         A queue of response chunks.
@@ -472,35 +543,73 @@ async def stream_gemini(
     # Create a queue to store response chunks
     queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
     
-    # If we have an image, we can't stream the response
-    # so we'll get the full response and put it in the queue
-    if image_url:
+    # If we have video, image_data_list, or an image_url, we can't truly stream the vision model's response.
+    # We'll get the full response from call_gemini_vision (or call_gemini for URL) and put it in the queue.
+    if video_data or image_data_list or image_url:
         try:
-            # Get full response with image
-            response = await call_gemini(
-                system_prompt=system_prompt,
-                user_content=user_content,
-                response_language=response_language, 
-                use_search_grounding=use_search_grounding,
-                image_url=image_url,
-                use_pro_model=use_pro_model
-            )
-            
-            # Put the full response in the queue
+            if video_data and video_mime_type:
+                logger.info(f"Stream mode: Processing with provided video data (MIME: {video_mime_type}).")
+                response = await call_gemini_vision(
+                    system_prompt=system_prompt,
+                    user_content=user_content,
+                    video_data=video_data,
+                    video_mime_type=video_mime_type,
+                    image_data_list=None, # Prioritize video
+                    use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
+                    response_language=response_language,
+                    use_pro_model=use_pro_model
+                )
+            elif image_data_list:
+                logger.info(f"Stream mode: Processing with {len(image_data_list)} provided image(s).")
+                response = await call_gemini_vision(
+                    system_prompt=system_prompt,
+                    user_content=user_content,
+                    image_data_list=image_data_list,
+                    video_data=None, # No video
+                    video_mime_type=None,
+                    use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
+                    response_language=response_language,
+                    use_pro_model=use_pro_model
+                )
+            elif image_url: 
+                logger.info(f"Stream mode: Processing with single image URL: {image_url}")
+                response = await call_gemini( 
+                    system_prompt=system_prompt,
+                    user_content=user_content,
+                    response_language=response_language,
+                    use_search_grounding=use_search_grounding,
+                    use_url_context=use_url_context,
+                    image_url=image_url, 
+                    use_pro_model=use_pro_model,
+                    # Pass None for direct media data as call_gemini handles URL download
+                    image_data_list=None, 
+                    video_data=None,
+                    video_mime_type=None
+                )
+            else: # Should ideally not be reached if the outer 'if' is true.
+                 response = "Error: stream_gemini logic error in media handling."
+
+
             await queue.put(response)
-            
-            # Signal end of stream
-            await queue.put(None)
-            
+            await queue.put(None) # Signal end of stream
             return queue
             
         except Exception as e:
-            logger.error(f"Error in stream with image: {e}", exc_info=True)
-            await queue.put(f"Error processing image: {str(e)}")
+            logger.error(f"Error in stream_gemini with media (video/image): {e}", exc_info=True)
+            error_msg = f"Error processing media: {str(e)}"
+            if video_data:
+                error_msg = f"Error processing video: {str(e)}"
+            elif image_data_list:
+                error_msg = f"Error processing {len(image_data_list)} image(s): {str(e)}"
+            elif image_url:
+                 error_msg = f"Error processing media from URL: {str(e)}"
+            await queue.put(error_msg)
             await queue.put(None)
             return queue
     
-    # Format the user content with language if specified
+    # Text-only streaming logic starts here
     if response_language:
         user_content += f"\n\nPlease reply in {response_language}."
     
@@ -525,9 +634,16 @@ async def stream_gemini(
             }
             
             # Add search tool if enabled
+            # Refactored tool selection logic
+            tools = []
             if use_search_grounding:
-                config["tools"] = [{"google_search": {}}]
+                tools.append({"google_search": {}})
                 logger.info("Stream - Using Google Search Grounding")
+            if use_url_context:
+                tools.append({"url_context": {}})
+                logger.info("Stream - Using URL Context")
+            if tools:
+                config["tools"] = tools
             
             model = GEMINI_MODEL
             if use_pro_model:
@@ -561,17 +677,22 @@ async def stream_gemini(
             
         except Exception as e:
             logger.error(f"Error in stream_worker: {e}", exc_info=True)
-            # Fall back to non-grounding streaming if grounding fails
-            if use_search_grounding:
-                logger.info("Falling back to non-grounding streaming")
-                # Make sure to use the correct parameter order
+            # Fall back to non-grounding streaming if grounding fails (text-only scenario)
+            if use_search_grounding: # This implies no media due to logic above
+                logger.info("Falling back to non-grounding text-only streaming")
                 fallback_queue = await stream_gemini(
                     system_prompt=system_prompt,
-                    user_content=user_content,
+                    user_content=user_content, 
                     response_language=response_language,
-                    use_search_grounding=False
+                    use_search_grounding=False, 
+                    use_url_context=use_url_context,
+                    use_pro_model=use_pro_model,
+                    # Ensure no media parameters are passed in fallback text-only call
+                    image_url=None,
+                    image_data_list=None,
+                    video_data=None,
+                    video_mime_type=None
                 )
-                
                 # Transfer items from the fallback queue to our queue
                 while True:
                     item = await fallback_queue.get()
@@ -649,14 +770,14 @@ async def generate_image_with_gemini(
         # If there's an input image, include it in the request
         if input_image_url:
             logger.info(f"Editing existing image from URL: {input_image_url}")
-            image_data = await download_image(input_image_url)
+            image_data = await download_media(input_image_url) # Changed to download_media
             
-            if not image_data:
-                logger.error("Failed to download input image, proceeding with text-only generation")
-                input_image_url = None
+            if not image_data: 
+                logger.error("Failed to download input media for image generation/edit, proceeding with text-only generation if applicable")
+                input_image_url = None # Ensure no further attempt to use it
             else:
                 # Configure generation parameters
-                model = GEMINI_IMAGE_MODEL
+                model = GEMINI_IMAGE_MODEL # This is specific to image generation
                 config = types.GenerateContentConfig(
                     response_modalities=['TEXT', 'IMAGE'],
                     max_output_tokens=65535,
@@ -720,21 +841,21 @@ async def generate_image_with_gemini(
                         from io import BytesIO
                         
                         # Open the image with PIL
-                        img = Image.open(BytesIO(image_bytes))
+                        img = await asyncio.to_thread(Image.open, BytesIO(image_bytes))
                         
                         # Convert to RGB mode if it's not already (required for JPEG)
                         if img.mode != 'RGB':
-                            img = img.convert('RGB')
+                            img = await asyncio.to_thread(img.convert, 'RGB')
                         
                         # Save as JPEG to a new BytesIO object
                         output = BytesIO()
-                        img.save(output, format='JPEG', quality=95)
+                        await asyncio.to_thread(img.save, output, format='JPEG', quality=95)
                         output.seek(0)
                         
                         # Return the JPEG bytes
                         return output.getvalue()
                     except Exception as img_error:
-                        logger.error(f"Error processing inline image data: {img_error}")
+                        logger.error(f"Error processing inline image data: {img_error}", exc_info=True)
                 
                 # Check if part has text (might contain error messages)
                 if hasattr(part, 'text') and part.text:

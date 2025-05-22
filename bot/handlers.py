@@ -2,9 +2,7 @@
 
 import json
 import logging
-import re
 import time
-import uuid
 from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
@@ -31,7 +29,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_URL
 )
 from bot.db.database import select_messages, queue_message_insert, select_messages_from_id
-from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini
+from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini, download_media
 
 # Configure logging
 logging.basicConfig(
@@ -100,33 +98,54 @@ def html_to_telegraph_nodes(element) -> List[Dict]:
                 nodes.append(text)
         # Element node
         else:
-            node = {}
-            
-            # Map tag
-            if child.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'aside', 
-                            'ul', 'ol', 'li', 'blockquote', 'pre', 'code', 
-                            'a', 'b', 'strong', 'i', 'em', 'u', 's', 'br', 'hr', 
-                            'img', 'video', 'figcaption', 'figure']:
-                node['tag'] = child.name
+            tag_name = child.name
+            node_content = {}
+
+            # Handle table specifically
+            if tag_name == 'table':
+                table_html_str = str(child)
+                # Remove newlines from table_html_str to prevent html2text from adding too many blank lines
+                table_html_str = table_html_str.replace('\n', '')
+                table_text = html2text.html2text(table_html_str)
+                # Strip leading/trailing whitespace, but preserve internal formatting
+                stripped_table_text = table_text.strip()
+                if stripped_table_text: # Only add if there's content
+                    nodes.append({'tag': 'pre', 'children': [stripped_table_text]})
+                continue
+
+            # Supported tags list (excluding table, handled above)
+            supported_tags = [
+                'p', 'aside', 'ul', 'ol', 'li', 'blockquote', 'pre', 'code',
+                'a', 'b', 'strong', 'i', 'em', 'u', 's', 'br', 'hr',
+                'img', 'video', 'figcaption', 'figure'
+            ]
+            header_tags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+
+            if tag_name in header_tags:
+                node_content['tag'] = 'h4' # Map all h1-h6 to h4
+            elif tag_name in supported_tags:
+                node_content['tag'] = tag_name
             else:
-                # Default to 'p' for unsupported tags
-                node['tag'] = 'p'
-            
-            # Add attributes if needed
-            if child.name == 'a' and child.get('href'):
-                node['attrs'] = {'href': child['href']}
-            elif child.name == 'img' and child.get('src'):
-                node['attrs'] = {'src': child['src']}
+                # Unsupported tag (that is not a table): recursively process children
+                nodes.extend(html_to_telegraph_nodes(child))
+                continue # Skip creating a node for the unsupported tag itself
+
+            # Add attributes if needed for supported tags
+            if tag_name == 'a' and child.get('href'):
+                node_content['attrs'] = {'href': child['href']}
+            elif tag_name == 'img' and child.get('src'):
+                node_content['attrs'] = {'src': child['src']}
                 if child.get('alt'):
-                    node['attrs']['alt'] = child['alt']
+                    node_content['attrs']['alt'] = child['alt']
+            # Note: video, figure, figcaption attributes might be needed too if they use them.
             
-            # Process children recursively
-            children = html_to_telegraph_nodes(child)
-            if children:
-                node['children'] = children
+            # Process children recursively for the current supported tag
+            processed_children = html_to_telegraph_nodes(child)
+            if processed_children:
+                node_content['children'] = processed_children
             
-            nodes.append(node)
-    
+            nodes.append(node_content)
+            
     return nodes
 
 async def create_telegraph_page(title: str, content: str) -> Optional[str]:
@@ -162,11 +181,14 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
         if response_data.get('ok'):
             return response_data['result']['url']
         else:
+            # This is an error from the API, not a Python exception in this block.
+            # If we wanted to log the response_data itself for debugging, that's different.
+            # For now, not adding exc_info=True as 'e' is not in this scope.
             logger.error(f"Failed to create Telegraph page: {response_data.get('error')}")
             return None
             
     except Exception as e:
-        logger.error(f"Error creating Telegraph page: {e}")
+        logger.error(f"Error creating Telegraph page: {e}", exc_info=True)
         return None
 
 
@@ -228,7 +250,7 @@ async def send_response(message, response, title="Response", parse_mode=ParseMod
                             f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
                         )
                 else:
-                    logger.error(f"Failed to send response as plain text: {plain_e}")
+                    logger.error(f"Failed to send response as plain text: {plain_e}", exc_info=True)
                     await message.edit_text(
                         "Error: Failed to format response. Please try again."
                     )
@@ -363,7 +385,7 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             
     except Exception as e:
-        logger.error(f"Error in tldr_handler: {e}")
+        logger.error(f"Error in tldr_handler: {e}", exc_info=True)
         try:
             await update.effective_message.reply_text(
                 f"Error summarizing messages: {str(e)}"
@@ -398,63 +420,100 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Get the message to fact-check
     message_to_check = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
     
-    # Check for images in the message
-    image_url = None
-    if update.effective_message.reply_to_message.photo:
-        # Get the largest photo (last in the list)
-        photo = update.effective_message.reply_to_message.photo[-1]
-        file = await context.bot.get_file(photo.file_id)
-        image_url = file.file_path
-        logger.info(f"Found image in message to fact-check: {image_url}")
-        
-        # If there's a caption, use it as the message text
-        if update.effective_message.reply_to_message.caption:
-            message_to_check = update.effective_message.reply_to_message.caption
-        # If there's no text at all, add a default prompt for image analysis
-        elif not message_to_check:
-            message_to_check = "Please analyze this image and verify any claims or content shown in it."
+    # Get the message to fact-check
+    replied_message = update.effective_message.reply_to_message
+    message_to_check = replied_message.text or replied_message.caption or ""
     
-    if not message_to_check and not image_url:
+    image_data_list: List[bytes] = []
+    video_data: Optional[bytes] = None
+    video_mime_type: Optional[str] = None
+    
+    # Video processing (takes precedence)
+    if replied_message.video:
+        logger.info(f"Fact-checking video: {replied_message.video.file_id} in chat {replied_message.chat.id}")
+        try:
+            video_file = await context.bot.get_file(replied_message.video.file_id)
+            video_mime_type = replied_message.video.mime_type
+            dl_video_data = await download_media(video_file.file_path)
+            if dl_video_data:
+                video_data = dl_video_data
+                image_data_list = [] # Clear images if video is present
+                logger.info(f"Video {replied_message.video.file_id} downloaded for fact-check. MIME: {video_mime_type}")
+                if not message_to_check: # If no caption, use default prompt for video
+                    message_to_check = "Please fact-check this video."
+            else:
+                logger.error(f"Failed to download video {replied_message.video.file_id} for fact-check.")
+        except Exception as e:
+            logger.error(f"Error processing video for fact-check: {e}", exc_info=True)
+    
+    # Photo processing (only if video was not processed)
+    if not video_data and replied_message.photo:
+        # Simplified to handle only the single photo from the replied message
+        photo_size = replied_message.photo[-1]
+        try:
+            file = await context.bot.get_file(photo_size.file_id)
+            img_bytes = await download_media(file.file_path)
+            if img_bytes:
+                image_data_list.append(img_bytes)
+                logger.info(f"Added single image to fact-check list from message {replied_message.message_id}.")
+        except Exception as e:
+            logger.error(f"Error downloading single image for fact-check: {e}", exc_info=True)
+
+    if not message_to_check and not image_data_list and not video_data: # Corrected Python 'and'
         await update.effective_message.reply_text(
-            "Cannot fact-check an empty message with no image."
+            "Cannot fact-check an empty message with no media (image/video)."
         )
         return
+    
+    # Default prompt if only media is present
+    if not message_to_check:
+        if video_data:
+            message_to_check = "Please analyze this video and verify any claims or content shown in it."
+        elif image_data_list:
+            message_to_check = "Please analyze these images and verify any claims or content shown in them."
         
-    # Detect the language of the message
     language, _ = langid.classify(message_to_check)
     
-    # Send a "processing" message
-    processing_message = await update.effective_message.reply_text(
-        "Fact-checking message..." if not image_url else "Analyzing image and fact-checking content..."
-    )
+    processing_message_text = "Fact-checking message..."
+    if video_data:
+        processing_message_text = "Analyzing video and fact-checking content..."
+    elif image_data_list:
+        processing_message_text = f"Analyzing {len(image_data_list)} image(s) and fact-checking content..."
+    
+    processing_message = await update.effective_message.reply_text(processing_message_text)
     
     try:
         # Format the system prompt with the current date
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_datetime=current_datetime)
-        use_pro_model=False
-        # Get response from Gemini with fact checking, using the detected language
+        use_pro_model = bool(video_data or image_data_list) # Use Pro model if media is present
+        
+        # Get response from Gemini with fact checking
         response_queue = await stream_gemini(
             system_prompt=system_prompt,
             user_content=message_to_check,
-            response_language=language,  # Pass the detected language
-            image_url=image_url,
-            use_pro_model=use_pro_model  # Pass the image URL if present
+            response_language=language,
+            image_data_list=image_data_list if image_data_list else None,
+            video_data=video_data,
+            video_mime_type=video_mime_type,
+            use_pro_model=True
         )
         
         # Process the streamed response
         full_response = ""
 
-        resp_msg = "Checking facts" if not image_url else "Analyzing image and checking facts"
+        resp_msg = "Checking facts"
+        if video_data:
+            resp_msg = "Analyzing video and checking facts"
+        elif image_data_list:
+            resp_msg = f"Analyzing {len(image_data_list)} image(s) and checking facts"
+        
         if use_pro_model:
             resp_msg = f"{resp_msg} with Pro Model...\nIt could take longer than usual, please be patient."
         else:
             resp_msg = f"{resp_msg}..."
-        # Initialize the message
-        await processing_message.edit_text(
-            resp_msg, 
-            parse_mode=None
-        )
+            
+        await processing_message.edit_text(resp_msg, parse_mode=None)
         
         # Process chunks from the queue
         while True:
@@ -475,12 +534,12 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             )
     
     except Exception as e:
-        logger.error(f"Error in factcheck_handler: {e}")
+        logger.error(f"Error in factcheck_handler: {e}", exc_info=True)
         try:
             await processing_message.edit_text(
                 f"Error fact-checking message: {str(e)}"
             )
-        except Exception:
+        except Exception: # Inner exception during error reporting
             pass
 
 async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -493,7 +552,6 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is rate limited
     if is_rate_limited(update.effective_message.from_user.id):
         await update.effective_message.reply_text(
             "Rate limit exceeded. Please try again later."
@@ -501,89 +559,109 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        # Get the query from the message
         query = " ".join(context.args) if context.args else ""
-        
-        # Check if there's an image in the message being replied to
-        image_url = None
-        
-        # Check if the command is a reply to a message
+        image_data_list: List[bytes] = []
+        video_data: Optional[bytes] = None
+        video_mime_type: Optional[str] = None
+        target_message_for_media = None
+        media_group_id_to_log = None
+
         if update.effective_message.reply_to_message:
-            # Check for text
-            reply = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
-            if reply:
-                if query:
-                    query = f"Quote: {reply}\nQuestion: {query}"
-                else:
-                    query = reply
+            target_message_for_media = update.effective_message.reply_to_message
+            replied_text_content = target_message_for_media.text or target_message_for_media.caption or ""
+            if replied_text_content:
+                if query: 
+                    query = f"Context from replied message: \"{replied_text_content}\"\n\nQuestion: {query}"
+                else: 
+                    query = replied_text_content
+        else: 
+            if update.effective_message.photo or update.effective_message.video: # Check current message for media
+                 target_message_for_media = update.effective_message
+                 if not query and update.effective_message.caption:
+                     query = update.effective_message.caption
+
+        if target_message_for_media:
+            media_group_id_to_log = target_message_for_media.media_group_id
+            # Video processing (takes precedence)
+            if target_message_for_media.video:
+                logger.info(f"Q handler processing video: {target_message_for_media.video.file_id}")
+                try:
+                    video_file = await context.bot.get_file(target_message_for_media.video.file_id)
+                    dl_video_data = await download_media(video_file.file_path)
+                    if dl_video_data:
+                        video_data = dl_video_data
+                        video_mime_type = target_message_for_media.video.mime_type
+                        image_data_list = [] # Clear images
+                        logger.info(f"Video {target_message_for_media.video.file_id} downloaded for /q. MIME: {video_mime_type}")
+                    else:
+                        logger.error(f"Failed to download video {target_message_for_media.video.file_id} for /q.")
+                except Exception as e:
+                    logger.error(f"Error processing video for /q: {e}", exc_info=True)
             
-            # Check for images, the reply to message photo has higher priority
-            photo = None
-            if update.effective_message.photo:
-                # Get the largest photo (last in the list)
-                photo = update.effective_message.photo[-1]
-
-            if update.effective_message.reply_to_message.photo:
-                # Get the largest photo (last in the list)
-                photo = update.effective_message.reply_to_message.photo[-1]
-
-            if photo:
-                file = await context.bot.get_file(photo.file_id)
-                image_url = file.file_path
-                logger.info(f"Found image in message to analyze: {image_url}")
-                
-                # If there's no text at all, add a default prompt for image analysis
-                if not query:
-                    query = "Please analyze this image and tell me what you see."
+            # Photo processing (only if video was not processed)
+            if not video_data and target_message_for_media.photo:
+                # Simplified to handle only the single photo from the target message
+                photo_size = target_message_for_media.photo[-1]
+                try:
+                    file = await context.bot.get_file(photo_size.file_id)
+                    img_bytes = await download_media(file.file_path)
+                    if img_bytes:
+                        image_data_list.append(img_bytes)
+                        logger.info(f"Added single image to /q list from message {target_message_for_media.message_id}.")
+                except Exception as e:
+                    logger.error(f"Error downloading single image for /q: {e}", exc_info=True)
         
-        if not query and not image_url:
+        if not query and not image_data_list and not video_data: # Corrected Python 'and'
             await update.effective_message.reply_text(
-                "Please provide a question after /q or reply to a message with /q"
+                "Please provide a question, reply to media, or caption media with /q."
             )
             return
+
+        if not query: # Default prompt if only media is present
+            if video_data: query = "Please analyze this video."
+            elif image_data_list: query = "Please analyze these image(s)."
+
+        processing_message_text = "Processing your question..."
+        if video_data:
+            processing_message_text = "Analyzing video and processing your question..."
+        elif image_data_list:
+            processing_message_text = f"Analyzing {len(image_data_list)} image(s) and processing your question..."
         
-        # Send a "processing" message
-        processing_message = await update.effective_message.reply_text(
-            "Processing your question..." if not image_url else "Analyzing image and processing your question..."
-        )
+        processing_message = await update.effective_message.reply_text(processing_message_text)
         
-        # Detect language
         language, _ = langid.classify(query)
         
-        if update.effective_sender:
-            if update.effective_sender.full_name:
-                username = update.effective_sender.full_name
-            elif update.effective_sender.first_name and update.effective_sender.last_name:
-                username = f"{update.effective_sender.first_name} {update.effective_sender.last_name}"
-            elif update.effective_sender.first_name:
-                username = update.effective_sender.first_name
-            elif update.effective_sender.username:
-                username = update.effective_sender.username
-            else:
-                username = "Anonymous"
-        else:
-            username = "Anonymous"
-        # Log the query
+        username = "Anonymous"
+        if update.effective_sender: # Should be update.effective_message.from_user
+            sender = update.effective_message.from_user
+            if sender.full_name: username = sender.full_name
+            elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name: username = sender.first_name
+            elif sender.username: username = sender.username
+        
         await queue_message_insert(
-            user_id=update.effective_sender.id,
+            user_id=update.effective_message.from_user.id, # Use from_user here
             username=username,
-            text=query,
+            text=query, 
             language=language,
             date=update.effective_message.date,
             reply_to_message_id=update.effective_message.reply_to_message.message_id if update.effective_message.reply_to_message else None,
             chat_id=update.effective_chat.id,
             message_id=update.effective_message.message_id
+            # Removed media_group_id=media_group_id_to_log
         )
         
-        # Format the system prompt with the current date
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = Q_SYSTEM_PROMPT.format(current_datetime=current_datetime)
+        use_pro_model = bool(video_data or image_data_list) # Use Pro model if media is present
         
-        # Get response from Gemini
         response = await call_gemini(
             system_prompt=system_prompt,
             user_content=query,
-            image_url=image_url  # Pass the image URL if present
+            image_data_list=image_data_list if image_data_list else None,
+            video_data=video_data,
+            video_mime_type=video_mime_type,
+            use_pro_model=use_pro_model 
         )
         
         if response:
@@ -594,12 +672,12 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
     
     except Exception as e:
-        logger.error(f"Error in q_handler: {e}")
+        logger.error(f"Error in q_handler: {e}", exc_info=True)
         try:
             await update.effective_message.reply_text(
                 f"Error processing your question: {str(e)}"
             )
-        except Exception:
+        except Exception: # Inner exception during error reporting
             pass
 
 async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
