@@ -45,3 +45,4 @@ ENV/
 .vscode/
 *.swp
 *.swo 
+test_veo3.py

@@ -139,6 +139,7 @@ async def get_messages_from_id(
                 sa_select(Message)
                 .where(Message.chat_id == chat_id)
                 .where(Message.text.isnot(None))
+                .where(~Message.text.startswith("/"))
                 .where(Message.message_id >= from_message_id)
             )
             

@@ -4,8 +4,7 @@ import json
 import logging
 import time
 from datetime import datetime
-from functools import wraps
-from typing import Any, Callable, Dict, List, Optional, TypeVar, cast
+from typing import Dict, List, Optional
 import markdown
 from bs4 import BeautifulSoup
 
@@ -28,7 +27,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL
 )
-from bot.db.database import select_messages, queue_message_insert, select_messages_from_id
+from bot.db.database import queue_message_insert, select_messages_from_id
 from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini, download_media, generate_video_with_veo
 from io import BytesIO
 
@@ -366,7 +365,7 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 formatted_messages += f"msg[{msg.message_id}] {timestamp} - {username}: {msg.text}\n\n"
         
         # Use the configured system prompt
-        prompt = TLDR_SYSTEM_PROMPT
+        prompt = TLDR_SYSTEM_PROMPT.format(bot_name=TELEGRAPH_AUTHOR_NAME)
         
         # Detect language from the messages
         all_text = " ".join([msg.text for msg in messages])
@@ -643,13 +642,12 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await queue_message_insert(
             user_id=update.effective_message.from_user.id, # Use from_user here
             username=username,
-            text=query, 
+            text=f"Ask {TELEGRAPH_AUTHOR_NAME}: {query}", 
             language=language,
             date=update.effective_message.date,
             reply_to_message_id=update.effective_message.reply_to_message.message_id if update.effective_message.reply_to_message else None,
             chat_id=update.effective_chat.id,
             message_id=update.effective_message.message_id
-            # Removed media_group_id=media_group_id_to_log
         )
         
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
@@ -741,7 +739,28 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.info(f"Processing image edit request: '{prompt}'")
         else:
             logger.info(f"Processing image generation request: '{prompt}'")
+
+        language, _ = langid.classify(message_text)
         
+        username = "Anonymous"
+        if update.effective_sender: # Should be update.effective_message.from_user
+            sender = update.effective_message.from_user
+            if sender.full_name: username = sender.full_name
+            elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name: username = sender.first_name
+            elif sender.username: username = sender.username
+
+        await queue_message_insert(
+            user_id=update.effective_message.from_user.id, # Use from_user here
+            username=username,
+            text=message_text, 
+            language=language,
+            date=update.effective_message.date,
+            reply_to_message_id=update.effective_message.reply_to_message.message_id if update.effective_message.reply_to_message else None,
+            chat_id=update.effective_chat.id,
+            message_id=update.effective_message.message_id
+        )
+
         # Generate the image using Gemini
         image_data = await generate_image_with_gemini(
             system_prompt=system_prompt,
@@ -911,6 +930,27 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
     try:
+        language, _ = langid.classify(message_text)
+        
+        username = "Anonymous"
+        if update.effective_sender: # Should be update.effective_message.from_user
+            sender = update.effective_message.from_user
+            if sender.full_name: username = sender.full_name
+            elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name: username = sender.first_name
+            elif sender.username: username = sender.username
+
+        await queue_message_insert(
+            user_id=update.effective_message.from_user.id, # Use from_user here
+            username=username,
+            text=message_text, 
+            language=language,
+            date=update.effective_message.date,
+            reply_to_message_id=update.effective_message.reply_to_message.message_id if update.effective_message.reply_to_message else None,
+            chat_id=update.effective_chat.id,
+            message_id=update.effective_message.message_id
+        )
+
         # Call Video Generation
         logger.info(f"Calling generate_video_with_veo with prompt: '{prompt}' and image_data: {'present' if image_data_bytes else 'absent'}")
         video_bytes, video_mime_type = await generate_video_with_veo(
