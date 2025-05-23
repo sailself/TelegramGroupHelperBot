@@ -9,8 +9,8 @@ from io import BytesIO
 from typing import Dict, List, Optional, Union, Any
 
 import aiohttp
-from google import genai
-from google.genai import types
+import google.genai as genai # Changed to google.genai
+from google.genai import types # Changed to google.genai
 from PIL import Image
 
 from bot.config import (
@@ -29,9 +29,20 @@ import time # Added for polling
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Initialize Gemini API client
-client = genai.Client(api_key=GEMINI_API_KEY) 
-# Global client for most functions. generate_video_with_veo uses its own client instance in its thread.
+# Global client variable, initialized as None
+_global_client = None
+
+def get_gemini_client():
+    """Lazily initializes and returns the global Gemini client."""
+    global _global_client
+    if _global_client is None:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            logger.error("GEMINI_API_KEY environment variable not set during client initialization.")
+            raise ValueError("GEMINI_API_KEY environment variable not set.")
+        logger.info("Initializing global Gemini client with API key.")
+        _global_client = genai.Client(api_key=api_key)
+    return _global_client
 
 # Safety settings for the models
 _safety_settings = [
@@ -231,7 +242,7 @@ async def call_gemini(
             logger.info("Using Standard model for Gemini")
         # Make the API call
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            get_gemini_client().models.generate_content,
             model=model,
             contents=combined_prompt,
             config=config
@@ -329,14 +340,14 @@ async def call_gemini_vision(
             logger.info(f"Processing with video data, MIME type: {video_mime_type}.")
             if image_data_list and any(image_data_list): # check if list is not empty
                 logger.warning("Video data provided; image_data_list will be ignored as video takes precedence.")
-            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type)))
+            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type))) # Reverted
             log_media_info = f"video ({video_mime_type})"
         elif image_data_list and any(image_data_list): # check if list is not empty
             logger.info(f"Processing with {len(image_data_list)} image(s).")
             for img_data in image_data_list:
                 mime_type = detect_mime_type(img_data) 
                 logger.info(f"Detected image MIME type: {mime_type} for one of the images.")
-                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type))
+                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type)) # Reverted
             log_media_info = f"{len(image_data_list)} image(s)"
         
         model_to_use = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
@@ -345,7 +356,7 @@ async def call_gemini_vision(
         
         # Make the API call with text and media using the client.models method
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            get_gemini_client().models.generate_content,
             model=model_to_use,
             contents=contents,
             config=config
@@ -656,7 +667,7 @@ async def stream_gemini(
             
             # For streaming, we need to handle the generate_content_stream method
             stream_response = await asyncio.to_thread(
-                client.models.generate_content_stream,
+                get_gemini_client().models.generate_content_stream,
                 model=model,
                 contents=combined_prompt,
                 config=config
@@ -782,7 +793,7 @@ async def generate_image_with_gemini(
             else:
                 # Configure generation parameters
                 model = GEMINI_IMAGE_MODEL # This is specific to image generation
-                config = types.GenerateContentConfig(
+                config = types.GenerateContentConfig( # Reverted
                     response_modalities=['TEXT', 'IMAGE'],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings
@@ -794,12 +805,12 @@ async def generate_image_with_gemini(
                 # Create multipart model request with image and prompt
                 contents = [
                     f"Edit this image: {prompt}",
-                    types.Part.from_bytes(data=image_data, mime_type=mime_type)
+                    types.Part.from_bytes(data=image_data, mime_type=mime_type) # Reverted
                 ]
                 
                 # Make the API call with both text and image
                 response = await asyncio.to_thread(
-                    client.models.generate_content,
+                    get_gemini_client().models.generate_content,
                     model=model,
                     contents=contents,
                     config=config
@@ -807,7 +818,7 @@ async def generate_image_with_gemini(
         else:
             # Text-only image generation
             model = GEMINI_IMAGE_MODEL  # Use the specialized image model
-            config = types.GenerateContentConfig(
+            config = types.GenerateContentConfig( # Reverted
                 response_modalities=['TEXT', 'IMAGE'],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings
@@ -818,7 +829,7 @@ async def generate_image_with_gemini(
             
             # Make the API call
             response = await asyncio.to_thread(
-                client.models.generate_content,
+                get_gemini_client().models.generate_content,
                 model=model,
                 contents=image_generation_prompt,
                 config=config
@@ -919,7 +930,11 @@ async def generate_video_with_veo(
 
     def _sync_generate_video():
         # Initialize client within the thread for safety
-        sync_client = genai.Client(api_key=GEMINI_API_KEY)
+        api_key_for_video = os.environ.get("GEMINI_API_KEY")
+        if not api_key_for_video:
+            logger.error("GEMINI_API_KEY not found in environment for _sync_generate_video.")
+            raise ValueError("GEMINI_API_KEY not found for video generation client.")
+        sync_client = genai.Client(api_key=api_key_for_video)
         logger.info("Synchronous Gemini client initialized for VEO generation.")
 
         image_part = None
@@ -929,13 +944,13 @@ async def generate_video_with_veo(
                 if not img_mime_type.startswith("image/"):
                     logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
                 else:
-                    image_part = types.Part.from_bytes(data=image_data, mime_type=img_mime_type)
+                    image_part = types.Part.from_bytes(data=image_data, mime_type=img_mime_type) # Reverted
                     logger.info(f"Image part created with MIME type: {img_mime_type}")
             except Exception as e:
                 logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
                 image_part = None # Ensure it's None if processing failed
         
-        video_config = types.GenerateVideosConfig(
+        video_config = types.GenerateVideosConfig( # Reverted
             person_generation="dont_allow", # As per example
             aspect_ratio="16:9",          # As per example
             number_of_videos=1            # As per example

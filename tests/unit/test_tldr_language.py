@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from bot.config import TLDR_PROMPT
+from bot.config import TLDR_SYSTEM_PROMPT
 from bot.llm import call_gemini
 
 
@@ -28,7 +28,7 @@ class TestTLDRLanguage(unittest.TestCase):
             
             # Call the function with English input
             response = await call_gemini(
-                system_prompt=TLDR_PROMPT,
+                system_prompt=TLDR_SYSTEM_PROMPT,
                 user_content=english_messages,
                 # No response_language here, which is correct behavior
             )
@@ -39,7 +39,7 @@ class TestTLDRLanguage(unittest.TestCase):
             
             # Check that the system prompt is the Chinese one
             self.assertEqual(messages[0]["role"], "system")
-            self.assertEqual(messages[0]["parts"][0], TLDR_PROMPT)
+            self.assertEqual(messages[0]["parts"][0], TLDR_SYSTEM_PROMPT)
             
             # Check that there's no third message forcing a language
             self.assertEqual(len(messages), 2)

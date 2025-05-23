@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import langdetect
 
-from bot.config import FACTCHECK_PROMPT
+from bot.config import FACTCHECK_SYSTEM_PROMPT
 from bot.llm import call_gemini
 
 
@@ -42,7 +42,7 @@ class TestFactcheckLanguage(unittest.TestCase):
                 
                 # Call the function
                 await call_gemini(
-                    system_prompt=FACTCHECK_PROMPT,
+                    system_prompt=FACTCHECK_SYSTEM_PROMPT,
                     user_content=input_text,
                     # No response_language
                 )
@@ -57,7 +57,7 @@ class TestFactcheckLanguage(unittest.TestCase):
                 
                 # Check that the system prompt is correctly set
                 self.assertEqual(messages[0]["role"], "system")
-                self.assertEqual(messages[0]["parts"][0], FACTCHECK_PROMPT)
+                self.assertEqual(messages[0]["parts"][0], FACTCHECK_SYSTEM_PROMPT)
                 
                 # Check that the second message contains the user input
                 self.assertEqual(messages[1]["role"], "user")
