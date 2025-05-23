@@ -23,6 +23,10 @@ from bot.config import (
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
+    USE_VERTEX_API,
+    VERTEX_PROJECT_ID,
+    VERTEX_LOCATION,
+    VERTEX_VIDEO_MODEL,
 )
 import time # Added for polling
 
@@ -36,7 +40,7 @@ def get_gemini_client():
     """Lazily initializes and returns the global Gemini client."""
     global _global_client
     if _global_client is None:
-        api_key = os.environ.get("GEMINI_API_KEY")
+        api_key = GEMINI_API_KEY
         if not api_key:
             logger.error("GEMINI_API_KEY environment variable not set during client initialization.")
             raise ValueError("GEMINI_API_KEY environment variable not set.")
@@ -44,7 +48,17 @@ def get_gemini_client():
         _global_client = genai.Client(api_key=api_key)
     return _global_client
 
+_global_vertex_client = None
+
+def get_vertex_client():
+    """Lazily initializes and returns the global Vertex client."""
+    global _global_vertex_client
+    if _global_vertex_client is None and USE_VERTEX_API:
+        logger.info("Initializing global Vertex client.")
+        _global_vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
+    return _global_vertex_client
 # Safety settings for the models
+
 _safety_settings = [
     {
         "category": "HARM_CATEGORY_HARASSMENT",
@@ -921,7 +935,8 @@ async def generate_video_with_veo(
     logger.info(f"System prompt (prepended): {system_prompt[:100]}...")
     logger.info(f"User prompt: {user_prompt[:100]}...")
     
-    combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+    # combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+    combined_prompt = user_prompt
 
     if image_data:
         logger.info(f"Image data provided: {len(image_data)} bytes")
@@ -930,12 +945,15 @@ async def generate_video_with_veo(
 
     def _sync_generate_video():
         # Initialize client within the thread for safety
-        api_key_for_video = os.environ.get("GEMINI_API_KEY")
-        if not api_key_for_video:
-            logger.error("GEMINI_API_KEY not found in environment for _sync_generate_video.")
-            raise ValueError("GEMINI_API_KEY not found for video generation client.")
-        sync_client = genai.Client(api_key=api_key_for_video)
-        logger.info("Synchronous Gemini client initialized for VEO generation.")
+        if USE_VERTEX_API:
+            sync_client = get_vertex_client()
+        else:
+            api_key_for_video = GEMINI_API_KEY
+            if not api_key_for_video:
+                logger.error("GEMINI_API_KEY not found in environment for _sync_generate_video.")
+                raise ValueError("GEMINI_API_KEY not found for video generation client.")
+            sync_client = genai.Client(api_key=api_key_for_video)
+            logger.info("Synchronous Gemini client initialized for VEO generation.")
 
         image_part = None
         if image_data:
@@ -943,15 +961,14 @@ async def generate_video_with_veo(
                 img_mime_type = detect_mime_type(image_data)
                 if not img_mime_type.startswith("image/"):
                     logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
-                else:
-                    image_part = types.Part.from_bytes(data=image_data, mime_type=img_mime_type) # Reverted
-                    logger.info(f"Image part created with MIME type: {img_mime_type}")
+                else: # Reverted
+                    logger.info(f"Image data received with MIME type: {img_mime_type}")
             except Exception as e:
                 logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
                 image_part = None # Ensure it's None if processing failed
         
         video_config = types.GenerateVideosConfig( # Reverted
-            person_generation="dont_allow", # As per example
+            person_generation="allow_adult", # As per example
             aspect_ratio="16:9",          # As per example
             number_of_videos=1            # As per example
         )
@@ -960,26 +977,25 @@ async def generate_video_with_veo(
         try:
             logger.info(f"Calling client.models.generate_videos with model '{GEMINI_VIDEO_MODEL}'")
             operation = sync_client.models.generate_videos(
-                model=GEMINI_VIDEO_MODEL,
+                model=GEMINI_VIDEO_MODEL if not USE_VERTEX_API else VERTEX_VIDEO_MODEL,
                 prompt=combined_prompt,
-                image=image_part if image_part else None,
-                config=video_config,
-                safety_settings=_safety_settings # Pass safety settings here
+                image=image_data if image_part else None,
+                config=video_config
             )
-            logger.info(f"Initial operation received: {operation.operation.name}, Done: {operation.done()}")
+            logger.info(f"Initial operation received: {operation.name}, Done: {operation.done}")
 
             polling_interval = 20  # seconds
             max_polling_attempts = 30 # Max 10 minutes (30 * 20s)
             attempts = 0
 
-            while not operation.done() and attempts < max_polling_attempts:
-                logger.info(f"Polling operation '{operation.operation.name}', attempt {attempts + 1}. Sleeping for {polling_interval}s.")
+            while not operation.done and attempts < max_polling_attempts:
+                logger.info(f"Polling operation '{operation.name}', attempt {attempts + 1}. Sleeping for {polling_interval}s.")
                 time.sleep(polling_interval)
-                operation = sync_client.operations.get(name=operation.operation.name)
-                logger.info(f"Operation status: Done={operation.done()}")
+                operation = sync_client.operations.get(operation)
+                logger.info(f"Operation status: Done={operation.done}")
                 attempts += 1
             
-            if not operation.done():
+            if not operation.done:
                 logger.error(f"Video generation operation timed out after {attempts * polling_interval} seconds.")
                 return None, None
 
@@ -993,21 +1009,16 @@ async def generate_video_with_veo(
                 
                 # Assuming first_video.video is a resource that client.files can handle
                 # and that it has a 'name' attribute (e.g., "files/file-id-string")
-                if hasattr(first_video, 'video') and hasattr(first_video.video, 'name'):
-                    video_file_name = first_video.video.name
-                    logger.info(f"Retrieving video file metadata for: {video_file_name}")
-                    
+                if hasattr(first_video, 'video'):                    
                     # Get file metadata (includes mime_type)
-                    retrieved_file_meta = sync_client.files.get(name=video_file_name)
-                    mime_type = retrieved_file_meta.mime_type
+                    mime_type = first_video.video.mime_type
                     logger.info(f"Video MIME type from metadata: {mime_type}")
 
                     # Download video content
-                    logger.info(f"Downloading video content for: {video_file_name}")
+                    logger.info(f"Downloading video content...")
                     # Assuming download().content provides bytes. If it saves to file, this needs change.
                     # Based on some SDKs, download might return a response-like object with a content attribute.
-                    downloaded_file_response = sync_client.files.download(name=video_file_name)
-                    video_bytes = downloaded_file_response.content # This is an assumption
+                    video_bytes = sync_client.files.download(file=first_video.video)
                     
                     logger.info(f"Video downloaded successfully: {len(video_bytes)} bytes, MIME type: {mime_type}")
                     return video_bytes, mime_type
