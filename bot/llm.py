@@ -24,12 +24,14 @@ from bot.config import (
     GEMINI_TOP_K,
     GEMINI_TOP_P,
 )
+import time # Added for polling
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
 # Initialize Gemini API client
-client = genai.Client(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY) 
+# Global client for most functions. generate_video_with_veo uses its own client instance in its thread.
 
 # Safety settings for the models
 _safety_settings = [
@@ -904,90 +906,109 @@ async def generate_video_with_veo(
         A tuple containing the video bytes and its MIME type, or (None, None) if generation failed.
     """
     logger.info(f"Generating video with VEO model: {GEMINI_VIDEO_MODEL}")
-    logger.info(f"System prompt: {system_prompt[:100]}...")
+    logger.info(f"Initiating VEO video generation with model: {GEMINI_VIDEO_MODEL}")
+    logger.info(f"System prompt (prepended): {system_prompt[:100]}...")
     logger.info(f"User prompt: {user_prompt[:100]}...")
+    
+    combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+
     if image_data:
         logger.info(f"Image data provided: {len(image_data)} bytes")
     else:
-        logger.info("No image data provided.")
+        logger.info("No image data provided for video generation.")
 
-    contents = [system_prompt, user_prompt]
-    if image_data:
+    def _sync_generate_video():
+        # Initialize client within the thread for safety
+        sync_client = genai.Client(api_key=GEMINI_API_KEY)
+        logger.info("Synchronous Gemini client initialized for VEO generation.")
+
+        image_part = None
+        if image_data:
+            try:
+                img_mime_type = detect_mime_type(image_data)
+                if not img_mime_type.startswith("image/"):
+                    logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
+                else:
+                    image_part = types.Part.from_bytes(data=image_data, mime_type=img_mime_type)
+                    logger.info(f"Image part created with MIME type: {img_mime_type}")
+            except Exception as e:
+                logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
+                image_part = None # Ensure it's None if processing failed
+        
+        video_config = types.GenerateVideosConfig(
+            person_generation="dont_allow", # As per example
+            aspect_ratio="16:9",          # As per example
+            number_of_videos=1            # As per example
+        )
+        logger.info(f"Video generation config: {video_config}")
+
         try:
-            mime_type = detect_mime_type(image_data)
-            if not mime_type.startswith("image/"):
-                logger.error(f"Invalid MIME type for image_data: {mime_type}. Skipping image.")
+            logger.info(f"Calling client.models.generate_videos with model '{GEMINI_VIDEO_MODEL}'")
+            operation = sync_client.models.generate_videos(
+                model=GEMINI_VIDEO_MODEL,
+                prompt=combined_prompt,
+                image=image_part if image_part else None,
+                config=video_config,
+                safety_settings=_safety_settings # Pass safety settings here
+            )
+            logger.info(f"Initial operation received: {operation.operation.name}, Done: {operation.done()}")
+
+            polling_interval = 20  # seconds
+            max_polling_attempts = 30 # Max 10 minutes (30 * 20s)
+            attempts = 0
+
+            while not operation.done() and attempts < max_polling_attempts:
+                logger.info(f"Polling operation '{operation.operation.name}', attempt {attempts + 1}. Sleeping for {polling_interval}s.")
+                time.sleep(polling_interval)
+                operation = sync_client.operations.get(name=operation.operation.name)
+                logger.info(f"Operation status: Done={operation.done()}")
+                attempts += 1
+            
+            if not operation.done():
+                logger.error(f"Video generation operation timed out after {attempts * polling_interval} seconds.")
+                return None, None
+
+            if operation.error:
+                logger.error(f"Video generation operation failed with error: {operation.error}")
+                return None, None
+
+            if operation.response and operation.response.generated_videos:
+                logger.info(f"Video generation successful. Found {len(operation.response.generated_videos)} video(s).")
+                first_video = operation.response.generated_videos[0]
+                
+                # Assuming first_video.video is a resource that client.files can handle
+                # and that it has a 'name' attribute (e.g., "files/file-id-string")
+                if hasattr(first_video, 'video') and hasattr(first_video.video, 'name'):
+                    video_file_name = first_video.video.name
+                    logger.info(f"Retrieving video file metadata for: {video_file_name}")
+                    
+                    # Get file metadata (includes mime_type)
+                    retrieved_file_meta = sync_client.files.get(name=video_file_name)
+                    mime_type = retrieved_file_meta.mime_type
+                    logger.info(f"Video MIME type from metadata: {mime_type}")
+
+                    # Download video content
+                    logger.info(f"Downloading video content for: {video_file_name}")
+                    # Assuming download().content provides bytes. If it saves to file, this needs change.
+                    # Based on some SDKs, download might return a response-like object with a content attribute.
+                    downloaded_file_response = sync_client.files.download(name=video_file_name)
+                    video_bytes = downloaded_file_response.content # This is an assumption
+                    
+                    logger.info(f"Video downloaded successfully: {len(video_bytes)} bytes, MIME type: {mime_type}")
+                    return video_bytes, mime_type
+                else:
+                    logger.error("Generated video response does not have the expected 'video.name' structure.")
+                    return None, None
             else:
-                contents.append(types.Part.from_bytes(data=image_data, mime_type=mime_type))
+                logger.warning("Video generation operation completed but no videos found in the response.")
+                return None, None
+
         except Exception as e:
-            logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
+            logger.error(f"Exception during VEO video generation or polling: {e}", exc_info=True)
+            return None, None
 
     try:
-        generation_config = types.GenerateContentConfig(
-            response_modalities=['VIDEO'], # This is a guess for VEO, might need adjustment
-            max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS, # VEO might have specific token limits
-            temperature=GEMINI_TEMPERATURE,
-            top_p=GEMINI_TOP_P,
-            top_k=GEMINI_TOP_K,
-        )
-        
-        # Safety settings are passed separately to the generate_content call
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model=GEMINI_VIDEO_MODEL,
-            contents=contents,
-            generation_config=generation_config,
-            safety_settings=_safety_settings 
-        )
-
-        logger.info(f"VEO response received. Candidates count: {len(response.candidates)}")
-
-        for candidate in response.candidates:
-            if not hasattr(candidate, 'content') or not hasattr(candidate.content, 'parts'):
-                logger.debug("Candidate has no content or parts.")
-                continue
-                
-            for part in candidate.content.parts:
-                # Prioritize inline_data with video MIME type
-                if hasattr(part, 'inline_data') and part.inline_data and hasattr(part.inline_data, 'mime_type'):
-                    mime_type = part.inline_data.mime_type
-                    logger.info(f"Found part with inline_data, MIME type: {mime_type}")
-                    if mime_type.startswith("video/"):
-                        video_bytes = part.inline_data.data
-                        logger.info(f"Extracted video data: {len(video_bytes)} bytes, MIME type: {mime_type}")
-                        return video_bytes, mime_type
-                    else:
-                        logger.debug(f"Part has inline_data but not a video MIME type: {mime_type}")
-                
-                # Check for part.video_metadata as a potential alternative (as per initial guess)
-                # This part is speculative as the exact API structure for VEO video is not confirmed.
-                # If `inline_data` with a video MIME type is the standard, this might not be hit.
-                elif hasattr(part, 'video_metadata') and part.video_metadata:
-                    logger.info(f"Found part with video_metadata: {part.video_metadata}")
-                    # The actual video data might be in another part or need a separate fetch.
-                    # This block would need to be adapted based on how `video_metadata` relates to the video bytes.
-                    # For now, if we hit this, it means inline_data wasn't found, so we log and continue.
-                    # If VEO uses `file_data` like some other Gemini modalities for large files:
-                    if hasattr(part, 'file_data') and part.file_data and hasattr(part.file_data, 'mime_type'):
-                        if part.file_data.mime_type.startswith("video/"):
-                            # This implies video is not inline and needs to be fetched from part.file_data.file_uri
-                            # This is not directly supported by returning bytes here.
-                            # For now, we'll log this case.
-                            logger.warning(f"Found video metadata with file_data (URI: {part.file_data.file_uri}). "
-                                           "Fetching URI-based video not implemented in this function.")
-                            # To implement this, one would need to download from the file_uri.
-                            # For now, we treat it as video not directly available as bytes.
-
-                elif hasattr(part, 'text') and part.text:
-                    logger.info(f"Part has text: {part.text[:100]}")
-            
-        logger.error("No video data found in VEO response.")
-        return None, None
-
+        return await asyncio.to_thread(_sync_generate_video)
     except Exception as e:
-        logger.error(f"Error generating video with VEO: {e}", exc_info=True)
-        # Specific error handling for VEO if known errors arise can be added here.
-        # For example, if 'VIDEO' modality is wrong:
-        if "modality" in str(e).lower():
-            logger.error("Potential issue with 'VIDEO' response modality. Check VEO documentation.")
+        logger.error(f"Error running _sync_generate_video in thread: {e}", exc_info=True)
         return None, None

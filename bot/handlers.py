@@ -839,6 +839,127 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "Sorry, an error occurred while processing your image request. Please try again later."
             )
 
+async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler for the /vid command.
+    
+    This command uses Veo to generate a video based on the provided text and/or image.
+    
+    Args:
+        update: The update containing the message.
+        context: The context object.
+    """
+    if update.effective_user is None or update.effective_message is None:
+        return
+
+    user_id = update.effective_user.id
+    
+    # Rate Limiting
+    if is_rate_limited(user_id):
+        await update.effective_message.reply_text(
+            "You're sending commands too quickly. Please wait a moment before trying again."
+        )
+        return
+
+    logger.info(f"Received /vid command from user {user_id}")
+
+    # Prompt Extraction
+    message_text = update.effective_message.text or ""
+    prompt = ""
+    if message_text.startswith("/vid"):
+        prompt = message_text[len("/vid"):].strip()
+
+    # Image Handling
+    image_data_bytes: Optional[bytes] = None
+    replied_message = update.effective_message.reply_to_message
+
+    if replied_message:
+        if replied_message.photo:
+            logger.info(f"Replying to photo for /vid command.")
+            photo = replied_message.photo[-1]  # Get the largest photo
+            try:
+                photo_file = await context.bot.get_file(photo.file_id)
+                image_data_bytes = await download_media(photo_file.file_path)
+                if image_data_bytes:
+                    logger.info(f"Image downloaded successfully for /vid command.")
+                else:
+                    logger.warning("Failed to download image for /vid.")
+            except Exception as e:
+                logger.error(f"Error downloading image for /vid: {e}", exc_info=True)
+                await update.effective_message.reply_text("Error downloading image. Please try again.")
+                return
+        
+        # Use caption as prompt if no command prompt and caption exists
+        if not prompt and replied_message.caption:
+            prompt = replied_message.caption.strip()
+            logger.info(f"Using caption from replied message as prompt: '{prompt}'")
+
+
+    # Default Prompt or Usage Message
+    if not prompt and not image_data_bytes:
+        await update.effective_message.reply_text(
+            "Please provide a prompt for the video, or reply to an image with a prompt (or use image caption as prompt).\n"
+            "Usage: /vid [text prompt]\n"
+            "Or reply to an image: /vid [optional text prompt]"
+        )
+        return
+    elif not prompt and image_data_bytes:
+        prompt = "Generate a video from this image."
+        logger.info(f"Using default prompt for image-only /vid: '{prompt}'")
+
+    processing_message = await update.effective_message.reply_text(
+        "Processing video request... This may take a few minutes."
+    )
+
+    try:
+        # Call Video Generation
+        logger.info(f"Calling generate_video_with_veo with prompt: '{prompt}' and image_data: {'present' if image_data_bytes else 'absent'}")
+        video_bytes, video_mime_type = await generate_video_with_veo(
+            system_prompt="You are a helpful video generation assistant.",
+            user_prompt=prompt,
+            image_data=image_data_bytes
+        )
+
+        # Response Handling
+        if video_bytes and video_mime_type:
+            logger.info(f"Video generated successfully. MIME type: {video_mime_type}, Size: {len(video_bytes)} bytes")
+            video_file = BytesIO(video_bytes)
+            video_file.name = 'generated_video.mp4' # Suggested name
+
+            try:
+                await update.effective_message.reply_video(
+                    video=video_file,
+                    caption="Here's your generated video!",
+                    read_timeout=120, # Increased timeouts
+                    write_timeout=120,
+                    connect_timeout=60,
+                    pool_timeout=60 
+                )
+                await processing_message.delete()
+                logger.info("Video sent successfully and processing message deleted.")
+            except Exception as e_telegram:
+                logger.error(f"Error sending video via Telegram: {e_telegram}", exc_info=True)
+                await processing_message.edit_text(
+                    "Sorry, I generated the video but couldn't send it via Telegram. It might be too large or in an unsupported format."
+                )
+        else:
+            logger.warning("Video generation failed (video_bytes is None).")
+            await processing_message.edit_text(
+                "Sorry, I couldn't generate the video. Please try a different prompt or image. The model might have limitations or be unavailable."
+            )
+
+    except Exception as e:
+        logger.error(f"Error in vid_handler: {e}", exc_info=True)
+        error_message_user = "Sorry, an unexpected error occurred while generating your video. Please try again later."
+        if "timeout" in str(e).lower():
+            error_message_user = "The video generation timed out. Please try a shorter prompt or a smaller image."
+        elif "unsupported" in str(e).lower():
+             error_message_user = "The video generation failed due to an unsupported format or feature. Please check your input."
+        try:
+            await processing_message.edit_text(error_message_user)
+        except Exception: # If editing fails, just log
+            logger.error("Failed to edit processing message with error.", exc_info=True)
+
+
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /start command.
 
