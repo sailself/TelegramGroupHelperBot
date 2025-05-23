@@ -65,11 +65,16 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 GEMINI_PRO_MODEL = os.getenv("GEMINI_PRO_MODEL", "gemini-2.5-pro-exp-03-25")
 GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "gemini-2.0-flash-exp-image-generation")
-GEMINI_VIDEO_MODEL = os.getenv("GEMINI_VIDEO_MODEL", "veo-3.0-generate-preview")
+GEMINI_VIDEO_MODEL = os.getenv("GEMINI_VIDEO_MODEL", "veo-2.0-generate-001")
 GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
 GEMINI_TOP_K = int(os.getenv("GEMINI_TOP_K", "40"))
 GEMINI_TOP_P = float(os.getenv("GEMINI_TOP_P", "0.95"))
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
+
+USE_VERTEX_API=os.getenv("USE_VERTEX_API", "false").lower() == "true"
+VERTEX_PROJECT_ID=os.getenv("VERTEX_PROJECT_ID")
+VERTEX_LOCATION=os.getenv("VERTEX_LOCATION")
+VERTEX_VIDEO_MODEL=os.getenv("VERTEX_VIDEO_MODEL")
 
 # Whether to use webhooks
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"

@@ -920,7 +920,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
         # Response Handling
-        if video_bytes and video_mime_type:
+        if video_bytes:
             logger.info(f"Video generated successfully. MIME type: {video_mime_type}, Size: {len(video_bytes)} bytes")
             video_file = BytesIO(video_bytes)
             video_file.name = 'generated_video.mp4' # Suggested name
