@@ -7,6 +7,8 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Question Answering**: Ask questions with `/q <your question>` and receive factual, search-grounded answers
+- **Image Generation**: Generate images with `/img <description>`
+- **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
 - **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
 - **Telegraph Integration**: Automatically creates Telegraph pages for lengthy responses
@@ -74,7 +76,10 @@ Configure the bot by editing the `.env` file:
 - `USE_WEBHOOK`: Whether to use webhook mode (default: false)
 - `WEBHOOK_URL`: URL for the webhook in production
 - `RATE_LIMIT_SECONDS`: Rate limiting between user requests (default: 15)
-- `GEMINI_MODEL`: Gemini model to use (default: gemini-pro)
+- `GEMINI_MODEL`: Gemini model to use for general text tasks (default: gemini-pro)
+- `GEMINI_PRO_MODEL`: Gemini Pro model for more complex tasks, including media analysis (default: gemini-2.5-pro-exp-03-25)
+- `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-2.0-flash-exp-image-generation)
+- `GEMINI_VIDEO_MODEL`: The Gemini model to use for video generation. Defaults to "veo-3.0-generate-preview".
 
 ## Deployment
 

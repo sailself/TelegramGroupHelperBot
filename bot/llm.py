@@ -9,8 +9,8 @@ from io import BytesIO
 from typing import Dict, List, Optional, Union, Any
 
 import aiohttp
-from google import genai
-from google.genai import types
+import google.genai as genai # Changed to google.genai
+from google.genai import types # Changed to google.genai
 from PIL import Image
 
 from bot.config import (
@@ -19,16 +19,30 @@ from bot.config import (
     GEMINI_MODEL,
     GEMINI_PRO_MODEL,
     GEMINI_IMAGE_MODEL,
+    GEMINI_VIDEO_MODEL,
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
 )
+import time # Added for polling
 
 # Set up logging
 logger = logging.getLogger(__name__)
 
-# Initialize Gemini API client
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Global client variable, initialized as None
+_global_client = None
+
+def get_gemini_client():
+    """Lazily initializes and returns the global Gemini client."""
+    global _global_client
+    if _global_client is None:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            logger.error("GEMINI_API_KEY environment variable not set during client initialization.")
+            raise ValueError("GEMINI_API_KEY environment variable not set.")
+        logger.info("Initializing global Gemini client with API key.")
+        _global_client = genai.Client(api_key=api_key)
+    return _global_client
 
 # Safety settings for the models
 _safety_settings = [
@@ -57,6 +71,7 @@ _safety_settings = [
 logger.info(f"Using Gemini model: {GEMINI_MODEL}")
 logger.info(f"Using Gemini Pro model: {GEMINI_PRO_MODEL}")
 logger.info(f"Using Image model: {GEMINI_IMAGE_MODEL}")
+logger.info(f"Using Video model: {GEMINI_VIDEO_MODEL}")
 
 
 def detect_mime_type(image_data: bytes) -> str:
@@ -227,7 +242,7 @@ async def call_gemini(
             logger.info("Using Standard model for Gemini")
         # Make the API call
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            get_gemini_client().models.generate_content,
             model=model,
             contents=combined_prompt,
             config=config
@@ -325,14 +340,14 @@ async def call_gemini_vision(
             logger.info(f"Processing with video data, MIME type: {video_mime_type}.")
             if image_data_list and any(image_data_list): # check if list is not empty
                 logger.warning("Video data provided; image_data_list will be ignored as video takes precedence.")
-            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type)))
+            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type))) # Reverted
             log_media_info = f"video ({video_mime_type})"
         elif image_data_list and any(image_data_list): # check if list is not empty
             logger.info(f"Processing with {len(image_data_list)} image(s).")
             for img_data in image_data_list:
                 mime_type = detect_mime_type(img_data) 
                 logger.info(f"Detected image MIME type: {mime_type} for one of the images.")
-                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type))
+                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type)) # Reverted
             log_media_info = f"{len(image_data_list)} image(s)"
         
         model_to_use = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
@@ -341,7 +356,7 @@ async def call_gemini_vision(
         
         # Make the API call with text and media using the client.models method
         response = await asyncio.to_thread(
-            client.models.generate_content,
+            get_gemini_client().models.generate_content,
             model=model_to_use,
             contents=contents,
             config=config
@@ -652,7 +667,7 @@ async def stream_gemini(
             
             # For streaming, we need to handle the generate_content_stream method
             stream_response = await asyncio.to_thread(
-                client.models.generate_content_stream,
+                get_gemini_client().models.generate_content_stream,
                 model=model,
                 contents=combined_prompt,
                 config=config
@@ -778,7 +793,7 @@ async def generate_image_with_gemini(
             else:
                 # Configure generation parameters
                 model = GEMINI_IMAGE_MODEL # This is specific to image generation
-                config = types.GenerateContentConfig(
+                config = types.GenerateContentConfig( # Reverted
                     response_modalities=['TEXT', 'IMAGE'],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings
@@ -790,12 +805,12 @@ async def generate_image_with_gemini(
                 # Create multipart model request with image and prompt
                 contents = [
                     f"Edit this image: {prompt}",
-                    types.Part.from_bytes(data=image_data, mime_type=mime_type)
+                    types.Part.from_bytes(data=image_data, mime_type=mime_type) # Reverted
                 ]
                 
                 # Make the API call with both text and image
                 response = await asyncio.to_thread(
-                    client.models.generate_content,
+                    get_gemini_client().models.generate_content,
                     model=model,
                     contents=contents,
                     config=config
@@ -803,7 +818,7 @@ async def generate_image_with_gemini(
         else:
             # Text-only image generation
             model = GEMINI_IMAGE_MODEL  # Use the specialized image model
-            config = types.GenerateContentConfig(
+            config = types.GenerateContentConfig( # Reverted
                 response_modalities=['TEXT', 'IMAGE'],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings
@@ -814,7 +829,7 @@ async def generate_image_with_gemini(
             
             # Make the API call
             response = await asyncio.to_thread(
-                client.models.generate_content,
+                get_gemini_client().models.generate_content,
                 model=model,
                 contents=image_generation_prompt,
                 config=config
@@ -884,3 +899,131 @@ async def generate_image_with_gemini(
 #         asyncio.run(test_gemini_vision(image_url))
 #     else:
 #         print("Please provide an image URL as an argument") 
+
+
+async def generate_video_with_veo(
+    system_prompt: str, 
+    user_prompt: str, 
+    image_data: Optional[bytes] = None
+) -> tuple[Optional[bytes], Optional[str]]:
+    """Generate video using Gemini VEO model.
+
+    Args:
+        system_prompt: The system prompt for the model.
+        user_prompt: The user's description of the desired video.
+        image_data: Optional image data to include in the generation.
+
+    Returns:
+        A tuple containing the video bytes and its MIME type, or (None, None) if generation failed.
+    """
+    logger.info(f"Generating video with VEO model: {GEMINI_VIDEO_MODEL}")
+    logger.info(f"Initiating VEO video generation with model: {GEMINI_VIDEO_MODEL}")
+    logger.info(f"System prompt (prepended): {system_prompt[:100]}...")
+    logger.info(f"User prompt: {user_prompt[:100]}...")
+    
+    combined_prompt = f"{system_prompt}\n\n{user_prompt}"
+
+    if image_data:
+        logger.info(f"Image data provided: {len(image_data)} bytes")
+    else:
+        logger.info("No image data provided for video generation.")
+
+    def _sync_generate_video():
+        # Initialize client within the thread for safety
+        api_key_for_video = os.environ.get("GEMINI_API_KEY")
+        if not api_key_for_video:
+            logger.error("GEMINI_API_KEY not found in environment for _sync_generate_video.")
+            raise ValueError("GEMINI_API_KEY not found for video generation client.")
+        sync_client = genai.Client(api_key=api_key_for_video)
+        logger.info("Synchronous Gemini client initialized for VEO generation.")
+
+        image_part = None
+        if image_data:
+            try:
+                img_mime_type = detect_mime_type(image_data)
+                if not img_mime_type.startswith("image/"):
+                    logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
+                else:
+                    image_part = types.Part.from_bytes(data=image_data, mime_type=img_mime_type) # Reverted
+                    logger.info(f"Image part created with MIME type: {img_mime_type}")
+            except Exception as e:
+                logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
+                image_part = None # Ensure it's None if processing failed
+        
+        video_config = types.GenerateVideosConfig( # Reverted
+            person_generation="dont_allow", # As per example
+            aspect_ratio="16:9",          # As per example
+            number_of_videos=1            # As per example
+        )
+        logger.info(f"Video generation config: {video_config}")
+
+        try:
+            logger.info(f"Calling client.models.generate_videos with model '{GEMINI_VIDEO_MODEL}'")
+            operation = sync_client.models.generate_videos(
+                model=GEMINI_VIDEO_MODEL,
+                prompt=combined_prompt,
+                image=image_part if image_part else None,
+                config=video_config,
+                safety_settings=_safety_settings # Pass safety settings here
+            )
+            logger.info(f"Initial operation received: {operation.operation.name}, Done: {operation.done()}")
+
+            polling_interval = 20  # seconds
+            max_polling_attempts = 30 # Max 10 minutes (30 * 20s)
+            attempts = 0
+
+            while not operation.done() and attempts < max_polling_attempts:
+                logger.info(f"Polling operation '{operation.operation.name}', attempt {attempts + 1}. Sleeping for {polling_interval}s.")
+                time.sleep(polling_interval)
+                operation = sync_client.operations.get(name=operation.operation.name)
+                logger.info(f"Operation status: Done={operation.done()}")
+                attempts += 1
+            
+            if not operation.done():
+                logger.error(f"Video generation operation timed out after {attempts * polling_interval} seconds.")
+                return None, None
+
+            if operation.error:
+                logger.error(f"Video generation operation failed with error: {operation.error}")
+                return None, None
+
+            if operation.response and operation.response.generated_videos:
+                logger.info(f"Video generation successful. Found {len(operation.response.generated_videos)} video(s).")
+                first_video = operation.response.generated_videos[0]
+                
+                # Assuming first_video.video is a resource that client.files can handle
+                # and that it has a 'name' attribute (e.g., "files/file-id-string")
+                if hasattr(first_video, 'video') and hasattr(first_video.video, 'name'):
+                    video_file_name = first_video.video.name
+                    logger.info(f"Retrieving video file metadata for: {video_file_name}")
+                    
+                    # Get file metadata (includes mime_type)
+                    retrieved_file_meta = sync_client.files.get(name=video_file_name)
+                    mime_type = retrieved_file_meta.mime_type
+                    logger.info(f"Video MIME type from metadata: {mime_type}")
+
+                    # Download video content
+                    logger.info(f"Downloading video content for: {video_file_name}")
+                    # Assuming download().content provides bytes. If it saves to file, this needs change.
+                    # Based on some SDKs, download might return a response-like object with a content attribute.
+                    downloaded_file_response = sync_client.files.download(name=video_file_name)
+                    video_bytes = downloaded_file_response.content # This is an assumption
+                    
+                    logger.info(f"Video downloaded successfully: {len(video_bytes)} bytes, MIME type: {mime_type}")
+                    return video_bytes, mime_type
+                else:
+                    logger.error("Generated video response does not have the expected 'video.name' structure.")
+                    return None, None
+            else:
+                logger.warning("Video generation operation completed but no videos found in the response.")
+                return None, None
+
+        except Exception as e:
+            logger.error(f"Exception during VEO video generation or polling: {e}", exc_info=True)
+            return None, None
+
+    try:
+        return await asyncio.to_thread(_sync_generate_video)
+    except Exception as e:
+        logger.error(f"Error running _sync_generate_video in thread: {e}", exc_info=True)
+        return None, None
