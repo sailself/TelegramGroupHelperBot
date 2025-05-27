@@ -3,6 +3,7 @@ asyncio>=3.4.3
 sqlalchemy>=2.0.26
 alembic>=1.12.1
 langid>=1.1.6
+google-cloud-aiplatform>=1.38.0
 google-genai>=1.16.1
 python-dotenv>=1.0.0
 asyncpg>=0.29.0
