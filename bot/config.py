@@ -71,10 +71,12 @@ GEMINI_TOP_K = int(os.getenv("GEMINI_TOP_K", "40"))
 GEMINI_TOP_P = float(os.getenv("GEMINI_TOP_P", "0.95"))
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
 
-USE_VERTEX_API=os.getenv("USE_VERTEX_API", "false").lower() == "true"
 VERTEX_PROJECT_ID=os.getenv("VERTEX_PROJECT_ID")
 VERTEX_LOCATION=os.getenv("VERTEX_LOCATION")
+USE_VERTEX_VIDEO=os.getenv("USE_VERTEX_VIDEO", "false").lower() == "true"
 VERTEX_VIDEO_MODEL=os.getenv("VERTEX_VIDEO_MODEL")
+USE_VERTEX_IMAGE=os.getenv("USE_VERTEX_IMAGE", "false").lower() == "true"
+VERTEX_IMAGE_MODEL=os.getenv("VERTEX_IMAGE_MODEL")
 
 # Whether to use webhooks
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"

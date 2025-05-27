@@ -51,7 +51,7 @@ async def init_db_wrapper():
 def main():
     """Main function to run the bot."""
     # Create the Application
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_handler))

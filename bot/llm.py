@@ -6,11 +6,11 @@ import logging
 import os
 import mimetypes
 from io import BytesIO
-from typing import Dict, List, Optional, Union, Any
+from typing import List, Optional, Union, Any
 
 import aiohttp
-import google.genai as genai # Changed to google.genai
-from google.genai import types # Changed to google.genai
+import google.genai as genai
+from google.genai import types
 from PIL import Image
 
 from bot.config import (
@@ -23,10 +23,12 @@ from bot.config import (
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
-    USE_VERTEX_API,
     VERTEX_PROJECT_ID,
-    VERTEX_LOCATION,
+    VERTEX_LOCATION,    
+    USE_VERTEX_VIDEO,
     VERTEX_VIDEO_MODEL,
+    USE_VERTEX_IMAGE,
+    VERTEX_IMAGE_MODEL
 )
 import time # Added for polling
 
@@ -53,9 +55,10 @@ _global_vertex_client = None
 def get_vertex_client():
     """Lazily initializes and returns the global Vertex client."""
     global _global_vertex_client
-    if _global_vertex_client is None and USE_VERTEX_API:
-        logger.info("Initializing global Vertex client.")
-        _global_vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
+    if USE_VERTEX_IMAGE or USE_VERTEX_VIDEO:
+        if _global_vertex_client is None:
+            logger.info("Initializing global Vertex client.")
+            _global_vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
     return _global_vertex_client
 # Safety settings for the models
 
@@ -807,7 +810,7 @@ async def generate_image_with_gemini(
             else:
                 # Configure generation parameters
                 model = GEMINI_IMAGE_MODEL # This is specific to image generation
-                config = types.GenerateContentConfig( # Reverted
+                config = types.GenerateContentConfig(
                     response_modalities=['TEXT', 'IMAGE'],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings
@@ -819,7 +822,7 @@ async def generate_image_with_gemini(
                 # Create multipart model request with image and prompt
                 contents = [
                     f"Edit this image: {prompt}",
-                    types.Part.from_bytes(data=image_data, mime_type=mime_type) # Reverted
+                    types.Part.from_bytes(data=image_data, mime_type=mime_type)
                 ]
                 
                 # Make the API call with both text and image
@@ -832,7 +835,7 @@ async def generate_image_with_gemini(
         else:
             # Text-only image generation
             model = GEMINI_IMAGE_MODEL  # Use the specialized image model
-            config = types.GenerateContentConfig( # Reverted
+            config = types.GenerateContentConfig(
                 response_modalities=['TEXT', 'IMAGE'],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings
@@ -977,7 +980,7 @@ async def generate_video_with_veo(
         try:
             logger.info(f"Calling client.models.generate_videos with model '{GEMINI_VIDEO_MODEL}'")
             operation = sync_client.models.generate_videos(
-                model=GEMINI_VIDEO_MODEL if not USE_VERTEX_API else VERTEX_VIDEO_MODEL,
+                model=GEMINI_VIDEO_MODEL if not USE_VERTEX_VIDEO else VERTEX_VIDEO_MODEL,
                 prompt=combined_prompt,
                 image=image_data if image_part else None,
                 config=video_config
