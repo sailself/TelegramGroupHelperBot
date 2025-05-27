@@ -24,13 +24,15 @@ from bot.config import (
     GEMINI_TOP_K,
     GEMINI_TOP_P,
     VERTEX_PROJECT_ID,
-    VERTEX_LOCATION,    
+    VERTEX_LOCATION,
     USE_VERTEX_VIDEO,
     VERTEX_VIDEO_MODEL,
     USE_VERTEX_IMAGE,
-    VERTEX_IMAGE_MODEL
+    VERTEX_IMAGE_MODEL,
 )
 import time # Added for polling
+# from google.cloud import aiplatform # Removed as per refactoring task
+# from google.cloud.aiplatform_v1beta1.types import content as gapic_content_types # May not be needed
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -58,8 +60,11 @@ def get_vertex_client():
     if USE_VERTEX_IMAGE or USE_VERTEX_VIDEO:
         if _global_vertex_client is None:
             logger.info("Initializing global Vertex client.")
+            # Assuming genai.Client can handle Vertex AI image models too.
+            # If not, this might need to be aiplatform.PredictionServiceClient or similar
             _global_vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
     return _global_vertex_client
+
 # Safety settings for the models
 
 _safety_settings = [
@@ -948,7 +953,7 @@ async def generate_video_with_veo(
 
     def _sync_generate_video():
         # Initialize client within the thread for safety
-        if USE_VERTEX_API:
+        if USE_VERTEX_IMAGE:
             sync_client = get_vertex_client()
         else:
             api_key_for_video = GEMINI_API_KEY
@@ -1041,3 +1046,97 @@ async def generate_video_with_veo(
     except Exception as e:
         logger.error(f"Error running _sync_generate_video in thread: {e}", exc_info=True)
         return None, None
+
+
+async def generate_image_with_vertex(
+    prompt: str,
+    number_of_images: int = 4,
+) -> List[bytes]:
+    """Generate images using Vertex AI.
+
+    Args:
+        prompt: The user's description of the desired image.
+        number_of_images: The number of images to generate.
+
+    Returns:
+        A list of image bytes (JPEG format), or an empty list if generation failed.
+    """
+    logger.info(
+        f"Generating {number_of_images} images with Vertex AI (Model: {VERTEX_IMAGE_MODEL}) "
+        f"using genai.Client for prompt: {prompt[:100]}..."
+    )
+    
+    vertex_client = get_vertex_client()
+    if not vertex_client:
+        logger.error("Vertex AI client (genai.Client) not available or not configured for image generation.")
+        return []
+    
+    if not VERTEX_IMAGE_MODEL: # Ensure model name is configured
+        logger.error("VERTEX_IMAGE_MODEL not configured in .env file.")
+        return []
+
+    generated_images_bytes: List[bytes] = []
+
+    try:
+
+        # Configuration for image generation.        
+        logger.info(f"Calling Vertex AI model {VERTEX_IMAGE_MODEL} via genai.Client.generate_content with candidate_count={number_of_images}")
+
+        response = vertex_client.models.generate_images(
+                model=VERTEX_IMAGE_MODEL,
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=number_of_images,
+                    enhance_prompt=True,
+                    safety_filter_level="BLOCK_ONLY_HIGH",
+                    person_generation="ALLOW_ADULT",
+                    include_rai_reason=True
+                )
+            )
+
+        if response and response.generated_images:
+            logger.info(f"Vertex AI (genai.Client) response received. Images count: {len(response.generated_images)}")
+            enhanced_prompt = None
+            for generated_image in response.generated_images:
+                if hasattr(generated_image, 'image'):
+                    image = generated_image.image
+                    if hasattr(image, 'image_bytes') and image.image_bytes is not None and len(image.image_bytes) > 0:
+                        logger.info(f"Vertex AI (genai.Client): Found image data with mime type: {image.mime_type}")
+                        image_bytes = image.image_bytes
+                        try:
+                            img = await asyncio.to_thread(Image.open, BytesIO(image_bytes))
+                            if img.mode != 'RGB':
+                                img = await asyncio.to_thread(img.convert, 'RGB')
+                            
+                            output_buffer = BytesIO()
+                            await asyncio.to_thread(img.save, output_buffer, format='JPEG', quality=95)
+                            generated_images_bytes.append(output_buffer.getvalue())
+                            logger.info("Successfully processed one image from Vertex AI (genai.Client) response.")
+                            if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
+                                break 
+                        except Exception as img_proc_err:
+                            logger.error(f"Vertex AI (genai.Client): Error processing image data: {img_proc_err}", exc_info=True)
+                    if enhanced_prompt is None and generated_image.enhanced_prompt is not None:
+                        enhanced_prompt = generated_image.enhanced_prompt
+                elif hasattr(generated_image, 'rai_filtered_reason'):
+                    logger.error(f"Vertex AI (genai.Client): Error generating image with RAI reason: {generated_image.rai_filtered_reason}")
+                if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
+                    break
+            
+            logger.info(f"Successfully processed {len(generated_images_bytes)} images from Vertex AI (genai.Client). With enhanced prompt {enhanced_prompt}")
+        else:
+            logger.warning("Vertex AI (genai.Client) image generation response did not contain any images or candidates.")
+
+    except Exception as e:
+        logger.error(f"Error generating image with Vertex AI (genai.Client): {e}", exc_info=True)
+        if "quota" in str(e).lower():
+            logger.error("Vertex AI image generation quota possibly exceeded.")
+        # Add specific error checks for genai.Client if known
+        return []
+
+    if not generated_images_bytes:
+        logger.warning(
+            f"Vertex AI (genai.Client) image generation for prompt '{prompt[:100]}...' resulted in no usable images."
+        )
+
+    return generated_images_bytes[:number_of_images] # Ensure we don't return more than requested
