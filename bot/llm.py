@@ -948,7 +948,7 @@ async def generate_video_with_veo(
 
     def _sync_generate_video():
         # Initialize client within the thread for safety
-        if USE_VERTEX_API:
+        if USE_VERTEX_VIDEO:
             sync_client = get_vertex_client()
         else:
             api_key_for_video = GEMINI_API_KEY
