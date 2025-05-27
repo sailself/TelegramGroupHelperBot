@@ -27,6 +27,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL,
     USE_VERTEX_IMAGE,
+    VERTEX_IMAGE_MODEL,
 )
 from bot.db.database import queue_message_insert, select_messages_from_id
 from bot.llm import (
@@ -757,23 +758,24 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     for i, img_data in enumerate(images_data_list):
                         img_io = BytesIO(img_data)
                         img_io.name = f'vertex_image_{i}.jpg'
-                        caption_text = "Images generated with Vertex AI, hope you like them!" if i == 0 else None
+                        caption_text = f"Images generated with {VERTEX_IMAGE_MODEL}, hope you like them!" if i == 0 else None
                         media_group.append(InputMediaPhoto(media=img_io, caption=caption_text))
                     
-                    await context.bot.send_media_group(chat_id=update.effective_chat.id, media=media_group)
+                    # await processing_message.context.bot.send_media_group(chat_id=update.effective_chat.id, media=media_group)
                     await processing_message.delete()
+                    await update.effective_message.reply_media_group(media=media_group)
                     logger.info("Media group sent and processing message deleted.")
                 elif len(images_data_list) == 1:
                     logger.info("Vertex AI generated 1 image. Sending as single photo.")
                     image_data = images_data_list[0]
                     image_io = BytesIO(image_data)
                     image_io.name = 'vertex_image.jpg'
-                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption="Image generated with Vertex AI, hope you like it."))
+                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption=f"Image generated with {VERTEX_IMAGE_MODEL}, hope you like it."))
                     logger.info("Single image sent by editing processing message.")
                 # else case (empty list) is handled by the next 'else'
             else:
                 logger.error("Vertex AI image generation failed or returned empty list.")
-                await processing_message.edit_text("Sorry, I couldn't generate images using Vertex AI. Please try again.")
+                await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't generate required images. Please change your prompt and try again.")
 
         else: # Fallback to Gemini
             logger.info(f"img_handler operating in Gemini mode for prompt: '{prompt}'")

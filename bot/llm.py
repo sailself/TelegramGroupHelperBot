@@ -953,7 +953,7 @@ async def generate_video_with_veo(
 
     def _sync_generate_video():
         # Initialize client within the thread for safety
-        if USE_VERTEX_API:
+        if USE_VERTEX_IMAGE:
             sync_client = get_vertex_client()
         else:
             api_key_for_video = GEMINI_API_KEY
@@ -1078,98 +1078,52 @@ async def generate_image_with_vertex(
     generated_images_bytes: List[bytes] = []
 
     try:
-        # Construct the model reference. 
-        # For Vertex AI models via genai.Client, the name might need to be fully qualified
-        # or the client handles it if project/location are set.
-        # Let's assume VERTEX_IMAGE_MODEL is the model ID like "imagen@005" or "imagegeneration@006"
-        # and the client is already configured with project and location.
-        # The genai.Client might internally use f"projects/{VERTEX_PROJECT_ID}/locations/{VERTEX_LOCATION}/publishers/google/models/{VERTEX_IMAGE_MODEL}"
-        # or a shorter form might work if the client is properly initialized.
-        # For example, for Imagen on Vertex: "imagen@005"
-        # For Gemini models on Vertex: "gemini-pro-vision" (but this is for vision, not necessarily image gen)
-        # The `generate_image_with_gemini` function uses `GEMINI_IMAGE_MODEL` which is also a short name.
-        # We will assume the short name `VERTEX_IMAGE_MODEL` works here with the `vertex_client`.
-        model = vertex_client.generative_model(model_name=VERTEX_IMAGE_MODEL)
 
-        # Configuration for image generation.
-        # How to specify number_of_images is crucial.
-        # For some models, this might be 'n' or 'candidate_count' in generation_config.
-        # The `types.GenerateContentConfig` for Gemini doesn't have this directly.
-        # Let's try passing it as a dictionary in generation_config.
-        # The specific parameter name for number of images can vary by model.
-        # Imagen models on Vertex AI often use "sampleCount".
-        generation_config_dict = {
-            "candidate_count": number_of_images, # Standard for Gemini, might work for Vertex via genai
-            "sample_count": number_of_images,    # Common for Imagen on Vertex
-            # Add other relevant parameters if known, e.g., quality, aspect_ratio
-            # "aspect_ratio": "1:1", # Example
-            # "safety_settings": _safety_settings, # safety_settings should be handled by the client/model config
-        }
-        # We might need to select the correct one, or the API might pick the one it understands.
-        # For now, let's include both and see if one is picked up, or consult docs if errors occur.
-        # A safer bet might be to check documentation for the specific VERTEX_IMAGE_MODEL.
-        # Let's assume "candidate_count" is the more standard way for `genai.Client`.
-        # However, `generate_content` for Gemini models (which `genai.Client` primarily targets)
-        # usually produces only one image per candidate, and `candidate_count` gives multiple text responses.
-        # This part is highly dependent on how `genai.Client` wraps Vertex AI image models.
-
-        # The `generate_image_with_gemini` function, which also uses `genai.Client` for a Gemini image model,
-        # gets multiple images by processing `response.candidates` where each candidate might have one image.
-        # It uses `response_modalities=['TEXT', 'IMAGE']`. This might not be applicable for Vertex models.
-
-        # Let's try a simpler approach: if the model generates one image per call,
-        # we might need to call it multiple times if `candidate_count` doesn't yield multiple distinct images.
-        # However, the goal is to replicate the previous `number_of_images` parameter.
-
-        # Sticking to the `generate_content` method, which is standard for `genai.Client`.
-        # The `response_modalities` is specific to certain Gemini models.
-        # For Vertex Imagen, the response is directly the image data or an error.
-        # The `genai.Client` might abstract this.
-
-        # Based on `generate_image_with_gemini` processing, it seems one call to `generate_content`
-        # can yield multiple candidates, each containing parts with image data.
-        # Let's assume this holds for Vertex models accessed via `genai.Client`.
-        # The `candidate_count` in `generation_config` is the most likely way to request multiple images.
-        
+        # Configuration for image generation.        
         logger.info(f"Calling Vertex AI model {VERTEX_IMAGE_MODEL} via genai.Client.generate_content with candidate_count={number_of_images}")
-        
-        # The `generate_content` call itself should be synchronous when using `genai.Client`
-        # unless we use `generate_content_async`. The previous `to_thread` was for `aiplatform` SDK.
-        # Here, `vertex_client.generative_model(...).generate_content(...)` is typically synchronous.
-        # To keep the async nature of the overall function, we should run this potentially blocking call in a thread.
-        
-        response = await asyncio.to_thread(
-            model.generate_content,
-            contents=prompt,
-            generation_config=types.GenerationConfig(candidate_count=number_of_images) # Use typed config if possible
-            # safety_settings=_safety_settings # Safety settings are often model-level or request-level
-        )
 
-        if response and response.candidates:
-            logger.info(f"Vertex AI (genai.Client) response received. Candidates count: {len(response.candidates)}")
-            for candidate in response.candidates:
-                if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
-                    for part in candidate.content.parts:
-                        if hasattr(part, 'inline_data') and part.inline_data and part.inline_data.data:
-                            logger.info(f"Vertex AI (genai.Client): Found image data with mime type: {part.inline_data.mime_type}")
-                            image_bytes = part.inline_data.data
-                            try:
-                                img = await asyncio.to_thread(Image.open, BytesIO(image_bytes))
-                                if img.mode != 'RGB':
-                                    img = await asyncio.to_thread(img.convert, 'RGB')
-                                
-                                output_buffer = BytesIO()
-                                await asyncio.to_thread(img.save, output_buffer, format='JPEG', quality=95)
-                                generated_images_bytes.append(output_buffer.getvalue())
-                                logger.info("Successfully processed one image from Vertex AI (genai.Client) response.")
-                                if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
-                                    break 
-                            except Exception as img_proc_err:
-                                logger.error(f"Vertex AI (genai.Client): Error processing image data: {img_proc_err}", exc_info=True)
+        response = vertex_client.models.generate_images(
+                model=VERTEX_IMAGE_MODEL,
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=number_of_images,
+                    enhance_prompt=True,
+                    safety_filter_level="BLOCK_ONLY_HIGH",
+                    person_generation="ALLOW_ADULT",
+                    include_rai_reason=True
+                )
+            )
+
+        if response and response.generated_images:
+            logger.info(f"Vertex AI (genai.Client) response received. Images count: {len(response.generated_images)}")
+            enhanced_prompt = None
+            for generated_image in response.generated_images:
+                if hasattr(generated_image, 'image'):
+                    image = generated_image.image
+                    if hasattr(image, 'image_bytes') and image.image_bytes is not None and len(image.image_bytes) > 0:
+                        logger.info(f"Vertex AI (genai.Client): Found image data with mime type: {image.mime_type}")
+                        image_bytes = image.image_bytes
+                        try:
+                            img = await asyncio.to_thread(Image.open, BytesIO(image_bytes))
+                            if img.mode != 'RGB':
+                                img = await asyncio.to_thread(img.convert, 'RGB')
+                            
+                            output_buffer = BytesIO()
+                            await asyncio.to_thread(img.save, output_buffer, format='JPEG', quality=95)
+                            generated_images_bytes.append(output_buffer.getvalue())
+                            logger.info("Successfully processed one image from Vertex AI (genai.Client) response.")
+                            if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
+                                break 
+                        except Exception as img_proc_err:
+                            logger.error(f"Vertex AI (genai.Client): Error processing image data: {img_proc_err}", exc_info=True)
+                    if enhanced_prompt is None and generated_image.enhanced_prompt is not None:
+                        enhanced_prompt = generated_image.enhanced_prompt
+                elif hasattr(generated_image, 'rai_filtered_reason'):
+                    logger.error(f"Vertex AI (genai.Client): Error generating image with RAI reason: {generated_image.rai_filtered_reason}")
                 if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
                     break
             
-            logger.info(f"Successfully processed {len(generated_images_bytes)} images from Vertex AI (genai.Client).")
+            logger.info(f"Successfully processed {len(generated_images_bytes)} images from Vertex AI (genai.Client). With enhanced prompt {enhanced_prompt}")
         else:
             logger.warning("Vertex AI (genai.Client) image generation response did not contain any images or candidates.")
 
