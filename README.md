@@ -7,7 +7,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Question Answering**: Ask questions with `/q <your question>` and receive factual, search-grounded answers
-- **Image Generation**: Generate images with `/img <description>`
+- **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images).
 - **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
 - **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
@@ -80,6 +80,14 @@ Configure the bot by editing the `.env` file:
 - `GEMINI_PRO_MODEL`: Gemini Pro model for more complex tasks, including media analysis (default: gemini-2.5-pro-exp-03-25)
 - `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-2.0-flash-exp-image-generation)
 - `GEMINI_VIDEO_MODEL`: The Gemini model to use for video generation. Defaults to "veo-3.0-generate-preview".
+
+### Vertex AI Settings (Optional):
+- `VERTEX_PROJECT_ID`: Your Google Cloud Project ID (required if using Vertex AI for any feature).
+- `VERTEX_LOCATION`: The Google Cloud region for your Vertex AI resources (e.g., `us-central1`, required if using Vertex AI).
+- `USE_VERTEX_IMAGE`: Set to "true" to use Vertex AI for image generation via the `/img` command (default: "false").
+- `VERTEX_IMAGE_MODEL`: The specific Vertex AI image generation model to use (e.g., `imagegeneration@006`).
+- `USE_VERTEX_VIDEO`: Set to "true" to use Vertex AI for video generation via the `/vid` command (default: "false", currently uses Gemini VEO).
+- `VERTEX_VIDEO_MODEL`: The specific Vertex AI video generation model to use if `USE_VERTEX_VIDEO` is true.
 
 ## Deployment
 

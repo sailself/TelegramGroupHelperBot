@@ -25,10 +25,19 @@ from bot.config import (
     Q_SYSTEM_PROMPT,
     TELEGRAPH_ACCESS_TOKEN,
     TELEGRAPH_AUTHOR_NAME,
-    TELEGRAPH_AUTHOR_URL
+    TELEGRAPH_AUTHOR_URL,
+    USE_VERTEX_IMAGE,
+    VERTEX_IMAGE_MODEL,
 )
 from bot.db.database import queue_message_insert, select_messages_from_id
-from bot.llm import call_gemini, stream_gemini, generate_image_with_gemini, download_media, generate_video_with_veo
+from bot.llm import (
+    call_gemini, 
+    stream_gemini, 
+    generate_image_with_gemini, 
+    generate_image_with_vertex, # Added
+    download_media, 
+    generate_video_with_veo
+)
 from io import BytesIO
 
 # Configure logging
@@ -731,17 +740,104 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     
     try:
-        # Keep system prompt simple
-        system_prompt = "Generate an image based on the description."
-        
-        # Log if this is a generation or editing request
-        if image_url:
-            logger.info(f"Processing image edit request: '{prompt}'")
-        else:
-            logger.info(f"Processing image generation request: '{prompt}'")
+        if USE_VERTEX_IMAGE:
+            logger.info(f"img_handler operating in Vertex AI mode for prompt: '{prompt}'")
+            # For Vertex, we are not currently supporting editing an existing image URL.
+            # The generate_image_with_vertex function currently only takes a prompt.
+            if image_url:
+                logger.warning("Vertex AI image generation called with an input image URL, but it's not currently supported by generate_image_with_vertex. Proceeding with prompt only.")
+                # Optionally, notify user:
+                # await processing_message.edit_text("Image editing is not currently supported with Vertex AI. Generating a new image from your prompt.")
+            
+            images_data_list = await generate_image_with_vertex(prompt=prompt)
 
+            if images_data_list:
+                if len(images_data_list) > 1:
+                    logger.info(f"Vertex AI generated {len(images_data_list)} images. Sending as media group.")
+                    media_group = []
+                    for i, img_data in enumerate(images_data_list):
+                        img_io = BytesIO(img_data)
+                        img_io.name = f'vertex_image_{i}.jpg'
+                        caption_text = f"Images generated with {VERTEX_IMAGE_MODEL}, hope you like them!" if i == 0 else None
+                        media_group.append(InputMediaPhoto(media=img_io, caption=caption_text))
+                    
+                    # await processing_message.context.bot.send_media_group(chat_id=update.effective_chat.id, media=media_group)
+                    await processing_message.delete()
+                    await update.effective_message.reply_media_group(media=media_group)
+                    logger.info("Media group sent and processing message deleted.")
+                elif len(images_data_list) == 1:
+                    logger.info("Vertex AI generated 1 image. Sending as single photo.")
+                    image_data = images_data_list[0]
+                    image_io = BytesIO(image_data)
+                    image_io.name = 'vertex_image.jpg'
+                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption=f"Image generated with {VERTEX_IMAGE_MODEL}, hope you like it."))
+                    logger.info("Single image sent by editing processing message.")
+                # else case (empty list) is handled by the next 'else'
+            else:
+                logger.error("Vertex AI image generation failed or returned empty list.")
+                await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't generate required images. Please change your prompt and try again.")
+
+        else: # Fallback to Gemini
+            logger.info(f"img_handler operating in Gemini mode for prompt: '{prompt}'")
+            # Keep system prompt simple
+            system_prompt = "Generate an image based on the description."
+            
+            # Log if this is a generation or editing request
+            if image_url:
+                logger.info(f"Gemini: Processing image edit request: '{prompt}'")
+            else:
+                logger.info(f"Gemini: Processing image generation request: '{prompt}'")
+
+            image_data = await generate_image_with_gemini(
+                system_prompt=system_prompt,
+                prompt=prompt,
+                input_image_url=image_url
+            )
+
+            if image_data:
+                logger.info("Gemini: Image data received. Attempting to send.")
+                try:
+                    image_io = BytesIO(image_data)
+                    image_io.name = 'gemini_generated_image.jpg'
+                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption="Image generated with Gemini, hope you like it."))
+                    logger.info("Gemini: Image sent successfully by editing processing message.")
+                except Exception as send_error:
+                    logger.error(f"Gemini: Error sending image via Telegram: {send_error}", exc_info=True)
+                    # Fallback saving to disk logic (can be kept or removed if not essential for Vertex path)
+                    try:
+                        import os
+                        from datetime import datetime
+                        os.makedirs("logs/images", exist_ok=True)
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        file_path = f"logs/images/gemini_image_{timestamp}.jpg"
+                        with open(file_path, "wb") as f:
+                            f.write(image_data)
+                        logger.info(f"Gemini: Saved problematic image to {file_path}")
+                        await processing_message.edit_text(
+                            "I generated an image with Gemini but couldn't send it. Saved for debugging."
+                        )
+                    except Exception as save_error:
+                        logger.error(f"Gemini: Error saving image to disk: {save_error}", exc_info=True)
+                        await processing_message.edit_text(
+                            "Sorry, I generated an image with Gemini but couldn't send it. Format might be incompatible."
+                        )
+            else:
+                logger.warning("Gemini: Image generation failed (image_data is None).")
+                # Different messages for generation vs editing
+                if image_url:
+                    await processing_message.edit_text(
+                        "I couldn't edit the image with Gemini. Please try:\n"
+                        "1. Simpler edit description\n2. More specific details\n3. Different edit type or try later"
+                    )
+                else:
+                    await processing_message.edit_text(
+                        "I couldn't generate an image with Gemini. Please try:\n"
+                        "1. Simpler prompt\n2. More specific details\n3. Try again later"
+                    )
+
+        # Moved common message logging outside the conditional block for cleaner structure
+        # This part is common whether Vertex or Gemini was used (or attempted)
         language, _ = langid.classify(message_text)
-        
         username = "Anonymous"
         if update.effective_sender: # Should be update.effective_message.from_user
             sender = update.effective_message.from_user
@@ -761,102 +857,26 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             message_id=update.effective_message.message_id
         )
 
-        # Generate the image using Gemini
-        image_data = await generate_image_with_gemini(
-            system_prompt=system_prompt,
-            prompt=prompt,
-            input_image_url=image_url
-        )
-        
-        if image_data:
-            # Send the generated image
-            try:
-                # Convert bytes to BytesIO for Telegram
-                from io import BytesIO
-                image_io = BytesIO(image_data)
-                image_io.name = 'generated_image.jpg'
-                
-                # Try to send the image
-                try:
-                    # await context.bot.send_photo(
-                    #     chat_id=update.effective_chat.id,
-                    #     photo=image_io,
-                    #     caption=f"Image generated, hope you like it."
-                    # )
-                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption=f"Image generated, hope you like it."))
-                    # await processing_message.edit_text("Image generated, hope you like it.")
-                except Exception as send_error:
-                    logger.error(f"Error sending image via Telegram: {send_error}", exc_info=True)
-                    
-                    # Save the image to disk as a fallback for debugging
-                    try:
-                        import os
-                        from datetime import datetime
-                        
-                        # Create a logs/images directory if it doesn't exist
-                        os.makedirs("logs/images", exist_ok=True)
-                        
-                        # Generate a unique filename based on timestamp
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        file_path = f"logs/images/image_{timestamp}.jpg"
-                        
-                        # Save the image
-                        with open(file_path, "wb") as f:
-                            f.write(image_data)
-                        
-                        logger.info(f"Saved problematic image to {file_path}")
-                        
-                        # Notify the user
-                        await processing_message.edit_text(
-                            "I generated an image but couldn't send it through Telegram. "
-                            "The image has been saved for debugging. Please try a different prompt."
-                        )
-                    except Exception as save_error:
-                        logger.error(f"Error saving image to disk: {save_error}", exc_info=True)
-                        await processing_message.edit_text(
-                            "Sorry, I generated an image but couldn't send it through Telegram. The image format might be incompatible."
-                        )
-            except Exception as e:
-                logger.error(f"Error sending image: {e}", exc_info=True)
-                await processing_message.edit_text(
-                    "Sorry, I generated an image but couldn't send it through Telegram. The image format might be incompatible."
-                )
-        else:
-            # Different messages for generation vs editing
-            if image_url:
-                await processing_message.edit_text(
-                    "I couldn't edit the image according to your request. The Gemini model may have limitations "
-                    "with image editing capabilities. Please try:\n"
-                    "1. Using a simpler edit description\n"
-                    "2. Providing more specific details\n"
-                    "3. Try a different type of edit or try again later"
-                )
-            else:
-                await processing_message.edit_text(
-                    "I couldn't generate an image based on your request. The Gemini model may have limitations with "
-                    "image generation capabilities. Please try:\n"
-                    "1. Using a simpler prompt\n"
-                    "2. Providing more specific details\n"
-                    "3. Try again later as model capabilities continue to improve"
-                )
     except Exception as e:
+        # General error logging for the handler
         logger.error(f"Error in img_handler: {e}", exc_info=True)
-        error_message = str(e).lower()
+        error_message_for_user = "Sorry, an unexpected error occurred while processing your image request."
         
-        if "not supported" in error_message or "unavailable" in error_message or "feature" in error_message:
-            await processing_message.edit_text(
-                "Sorry, image generation is not currently supported by the Gemini API. "
-                "This feature may be available in the future."
-            )
-        elif "image_process_failed" in error_message:
-            await processing_message.edit_text(
-                "Sorry, there was an issue processing the generated image. "
-                "Please try again with a different prompt or wait for a while before trying again."
-            )
-        else:
-            await processing_message.edit_text(
-                "Sorry, an error occurred while processing your image request. Please try again later."
-            )
+        # More specific error messages based on context (e.g., if it's a known API issue)
+        # This part can be refined if common errors from Vertex/Gemini need special user messages.
+        # For example, if 'e' contains specific error codes or messages.
+        # if "quota" in str(e).lower():
+        #    error_message_for_user = "Image generation quota exceeded. Please try again later."
+        # elif "unsafe" in str(e).lower(): # Example for content safety issues
+        #    error_message_for_user = "The generated image might be unsafe. Please try a different prompt."
+            
+        try:
+            await processing_message.edit_text(error_message_for_user)
+        except Exception as edit_err: # Fallback if editing the message fails
+            logger.error(f"Failed to edit processing message with error: {edit_err}", exc_info=True)
+            # As a last resort, try sending a new message if the original processing_message is gone or uneditable
+            # await update.effective_message.reply_text(error_message_for_user)
+
 
 async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for the /vid command.
