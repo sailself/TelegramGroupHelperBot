@@ -272,7 +272,45 @@ async def select_messages(chat_id: int, limit: int = 10) -> List[Message]:
     Returns:
         A list of Message objects.
     """
-    return await get_last_n_text_messages(chat_id, limit) 
+    return await get_last_n_text_messages(chat_id, limit)
+
+
+async def select_messages_by_user(
+    chat_id: int, user_id: int, limit: int, exclude_commands: bool = True
+) -> List[Message]:
+    """Get the last n text messages from a specific user in a chat.
+
+    Args:
+        chat_id: The ID of the chat.
+        user_id: The ID of the user.
+        limit: The number of messages to retrieve.
+        exclude_commands: Whether to exclude command messages.
+
+    Returns:
+        A list of Message objects in chronological order.
+    """
+    async with get_session() as session:
+        try:
+            stmt = (
+                sa_select(Message)
+                .where(Message.chat_id == chat_id)
+                .where(Message.user_id == user_id)
+                .where(Message.text.isnot(None)) # Ensure messages have text content
+            )
+
+            if exclude_commands:
+                stmt = stmt.where(~Message.text.startswith("/"))
+
+            stmt = stmt.order_by(Message.date.desc()).limit(limit)
+            
+            result = await session.execute(stmt)
+            messages = result.scalars().all()
+            
+            return list(reversed(messages)) # Return in chronological order
+        except Exception as e:
+            logger.error(f"Error retrieving messages for user {user_id} in chat {chat_id}: {e}")
+            return []
+
 
 async def select_messages_from_id(chat_id: int, message_id: int) -> List[Message]:
     """Select messages from the database.

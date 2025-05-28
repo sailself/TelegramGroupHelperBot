@@ -94,6 +94,9 @@ TELEGRAPH_ACCESS_TOKEN = os.getenv("TELEGRAPH_ACCESS_TOKEN", "")
 TELEGRAPH_AUTHOR_NAME = os.getenv("TELEGRAPH_AUTHOR_NAME", "")
 TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "")
 
+# Number of messages to fetch for user-specific history features
+USER_HISTORY_MESSAGE_COUNT = int(os.getenv("USER_HISTORY_MESSAGE_COUNT", "200"))
+
 # Prompt for a short summary
 TLDR_SYSTEM_PROMPT = """你是一个AI助手，名叫{bot_name}，请用中文总结以下群聊内容。
 请先汇总出群聊主要内容。
@@ -135,4 +138,31 @@ Guidelines for your responses:
 11. CRITICAL: If the question is in a language other than English, respond in the same language.
 
 Remember to be helpful, accurate, and respectful in your responses.
-""" 
+"""
+
+# Prompt for the /profileme handler
+PROFILEME_SYSTEM_PROMPT = (
+    "You are an experienced professional profiler. Based on the following chat history of a user in a group chat, "
+    "generate a concise and insightful user profile. The profile must highlight their "
+    "communication style, potential interests, key personality traits, and how they typically interact in the group. "
+    "Focus on patterns and recurring themes. Address the user directly (e.g., 'You seem to be...')."
+    "Keep it friendly and respectful. Do not include any specific message content, timestamps or message IDs."
+    "The user is asking for their own profile."
+)
+
+# Prompt for the /paintme handler (image prompt generation)
+PAINTME_SYSTEM_PROMPT = (
+    "You are a highly creative AI specializing in crafting evocative and detailed image prompts. "
+    "Based on the following chat history of a user, generate a concise, yet descriptive and imaginative image prompt "
+    "that metaphorically represents the user's personality, communication style, or recurring themes found in their messages. "
+    "This prompt will be used by an AI image generation model to create a visual representation of the user. "
+    "Focus on symbolism, artistic interpretation, and sensory details. Do not refer to the user directly or mention the chat itself in the prompt. "
+    "The final prompt should be a descriptive phrase or a short paragraph. "
+    "Strive for prompts that can lead to realistic, artistic, or conceptually rich images. \n\n"
+    "Here are some examples of the type of detailed and descriptive image prompts to generate:\n"
+    "- 'Photorealistic close-up of a tabby cat with vibrant green eyes, soft morning light filtering through a window, highlighting its whiskers and the texture of its fur.'\n"
+    "- 'Impressionistic painting of a bustling Parisian street market on a rainy day, colorful umbrellas reflecting on wet cobblestones, capturing a sense of hurried energy and romanticism.'\n"
+    "- 'Fantasy concept art of an ancient, moss-covered library hidden within a giant, glowing mushroom forest, shafts of mystical light illuminating floating books and arcane symbols.'\n"
+    "- 'A lone astronaut tending a small, vibrant rose garden inside a geodesic dome on Mars, the desolate red landscape visible through the transparent panels, evoking themes of hope and resilience.'\n"
+    "- 'Surreal digital art of a giant, antique pocket watch melting into a serene, starlit desert landscape, with a single, silhouetted figure walking towards the horizon.'"
+)

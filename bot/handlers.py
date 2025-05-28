@@ -23,13 +23,20 @@ from bot.config import (
     TLDR_SYSTEM_PROMPT, 
     FACTCHECK_SYSTEM_PROMPT, 
     Q_SYSTEM_PROMPT,
+    PROFILEME_SYSTEM_PROMPT, # Added
+    PAINTME_SYSTEM_PROMPT,   # Added
+    USER_HISTORY_MESSAGE_COUNT, # Added
     TELEGRAPH_ACCESS_TOKEN,
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL,
     USE_VERTEX_IMAGE,
     VERTEX_IMAGE_MODEL,
 )
-from bot.db.database import queue_message_insert, select_messages_from_id
+from bot.db.database import ( # Reformatted for clarity
+    queue_message_insert, 
+    select_messages_from_id, 
+    select_messages_by_user # Added
+)
 from bot.llm import (
     call_gemini, 
     stream_gemini, 
@@ -1038,11 +1045,208 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /q [question] - Ask me any question or analyze images\n"
         "• /img [description] - Generate or edit an image using Gemini\n"
         "• /vid [prompt] - Generate a video based on text and/or a replied-to image.\n"
+    "• /profileme - Generate your user profile based on your chat history.\n"
+    "• /paintme - Generate an image representing you based on your chat history.\n"
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
     
     await update.effective_message.reply_text(welcome_message)
+
+
+async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /paintme command.
+
+    Fetches user's chat history, generates an image prompt with Gemini,
+    then generates an image and sends it to the user.
+    """
+    if update.effective_user is None or update.effective_message is None or update.effective_chat is None:
+        return
+
+    user_id = update.effective_user.id
+
+    if is_rate_limited(user_id):
+        await update.effective_message.reply_text("Rate limit exceeded. Please try again later.")
+        return
+
+    processing_message = await update.effective_message.reply_text(
+        "Let me paint you a picture based on your recent chats... This might take a moment."
+    )
+
+    try:
+        # 1. Fetch user's chat history using the new function and config
+        user_messages = await select_messages_by_user(
+            chat_id=update.effective_chat.id,
+            user_id=user_id,
+            limit=USER_HISTORY_MESSAGE_COUNT 
+        )
+        
+        # paintme handler previously used latest 50. We fetch USER_HISTORY_MESSAGE_COUNT, 
+        # then slice to the most recent 50 if more are returned.
+        # This respects the new centralized fetching logic while keeping paintme's specific need.
+        if len(user_messages) > 50:
+            user_messages = user_messages[-50:]
+
+        if not user_messages or len(user_messages) < 5: # Need a few messages at least
+            await processing_message.edit_text(
+                "I don't have enough of your messages (at least 5 recent ones) in this chat to paint a picture. Keep chatting!"
+            )
+            return
+
+        # 2. Format chat history for Gemini prompt generation
+        formatted_history = "User's recent messages in the group chat:\n\n"
+        for msg in user_messages:
+            formatted_history += f"- \"{msg.text}\"\n"
+        
+        # 3. Generate image prompt with Gemini
+        image_prompt = await call_gemini(
+            system_prompt=PAINTME_SYSTEM_PROMPT, # Use imported constant
+            user_content=formatted_history,
+            use_search_grounding=False
+        )
+
+        if not image_prompt or "No response generated" in image_prompt:
+            await processing_message.edit_text(
+                "I couldn't come up with an image idea for you at this time. Please try again later."
+            )
+            return
+        
+        await processing_message.edit_text(
+            f"Generated image prompt: \"{image_prompt}\". Now creating your masterpiece..."
+        )
+
+        # 4. Generate Image
+        if USE_VERTEX_IMAGE:
+            logger.info(f"paintme_handler: Using Vertex AI for image generation with prompt: '{image_prompt}'")
+            images_data_list = await generate_image_with_vertex(prompt=image_prompt, number_of_images=1) # Generate 1 for this command
+            
+            if images_data_list and images_data_list[0]:
+                image_data = images_data_list[0]
+                image_io = BytesIO(image_data)
+                image_io.name = 'vertex_paintme_image.jpg'
+                await update.effective_message.reply_photo(
+                    photo=image_io, 
+                    caption=f"Here's your artistic representation!\nPrompt: \"{image_prompt}\"\nModel: {VERTEX_IMAGE_MODEL}"
+                )
+                await processing_message.delete()
+            else:
+                logger.error("paintme_handler: Vertex AI image generation failed or returned no image.")
+                await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't paint your picture. Please try again.")
+        
+        else: # Use Gemini for image generation
+            logger.info(f"paintme_handler: Using Gemini for image generation with prompt: '{image_prompt}'")
+            # System prompt for Gemini image generation can be simple
+            gemini_image_system_prompt = "Generate an image based on the following description."
+            image_data = await generate_image_with_gemini(
+                system_prompt=gemini_image_system_prompt,
+                prompt=image_prompt
+            )
+
+            if image_data:
+                image_io = BytesIO(image_data)
+                image_io.name = 'gemini_paintme_image.jpg'
+                await update.effective_message.reply_photo(
+                    photo=image_io, 
+                    caption=f"Here's your artistic representation!\nPrompt: \"{image_prompt}\"\nModel: Gemini"
+                )
+                await processing_message.delete()
+            else:
+                logger.warning("paintme_handler: Gemini image generation failed.")
+                await processing_message.edit_text("Sorry, Gemini couldn't paint your picture. Please try again.")
+        
+        # Log the command usage
+        language, _ = langid.classify(formatted_history) # Use history for language context
+        username = "Anonymous"
+        if update.effective_message.from_user:
+            sender = update.effective_message.from_user
+            if sender.full_name: username = sender.full_name
+            elif sender.first_name: username = sender.first_name
+            elif sender.username: username = sender.username
+        
+        await queue_message_insert(
+            user_id=user_id,
+            username=username,
+            text=update.effective_message.text or "/paintme", # Log the command itself
+            language=language, # Could be 'xx' if history is very short/non-textual
+            date=update.effective_message.date,
+            chat_id=update.effective_chat.id,
+            message_id=update.effective_message.message_id
+        )
+
+    except Exception as e:
+        logger.error(f"Error in paintme_handler: {e}", exc_info=True)
+        try:
+            await processing_message.edit_text(
+                f"Sorry, an unexpected error occurred while painting your picture: {str(e)}"
+            )
+        except Exception: 
+            pass
+
+
+async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /profileme command.
+
+    Args:
+        update: The update containing the message.
+        context: The context object.
+    """
+    if update.effective_user is None or update.effective_message is None or update.effective_chat is None:
+        return
+
+    user_id = update.effective_user.id
+
+    # Check if user is rate limited
+    if is_rate_limited(user_id):
+        await update.effective_message.reply_text(
+            "Rate limit exceeded. Please try again later."
+        )
+        return
+
+    processing_message = await update.effective_message.reply_text(
+        "Generating your profile... This might take a moment."
+    )
+
+    try:
+        # Fetch user's chat history using the new function and config
+        user_messages = await select_messages_by_user(
+            chat_id=update.effective_chat.id,
+            user_id=user_id,
+            limit=USER_HISTORY_MESSAGE_COUNT
+        )
+
+        if not user_messages: # USER_HISTORY_MESSAGE_COUNT (e.g. 200) might be too high to always have messages.
+            await processing_message.edit_text("I don't have enough of your messages in this chat to generate a profile yet (need some from your recent history). Keep chatting!")
+            return
+
+        # Format chat history for Gemini
+        formatted_history = "Here is the user's recent chat history in this group:\n\n"
+        for msg in user_messages:
+            timestamp = msg.date.strftime("%Y-%m-%d %H:%M:%S")
+            # We already know it's the user's message, so no need to repeat username
+            formatted_history += f"{timestamp}: {msg.text}\n"
+        
+        # Generate profile using Gemini
+        profile_response = await call_gemini(
+            system_prompt=PROFILEME_SYSTEM_PROMPT, # Use imported constant
+            user_content=formatted_history,
+            use_search_grounding=False # Probably not needed for profiling
+        )
+
+        if profile_response:
+            await send_response(processing_message, profile_response, "Your User Profile")
+        else:
+            await processing_message.edit_text(
+                "I couldn't generate a profile at this time. Please try again later."
+            )
+
+    except Exception as e:
+        logger.error(f"Error in profileme_handler: {e}", exc_info=True)
+        try:
+            await processing_message.edit_text(
+                f"Sorry, an error occurred while generating your profile: {str(e)}"
+            )
+        except Exception: # Inner exception during error reporting
+            pass
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1074,6 +1278,12 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     /vid - Generate a video
     Usage: `/vid [text prompt]` (optionally reply to an image)
     Or: `/vid` (replying to an image with an optional text prompt in the caption or command)
+
+    /profileme - Generate your user profile based on your chat history in this group.
+    Usage: `/profileme`
+
+    /paintme - Generate an image representing you based on your chat history in this group.
+    Usage: `/paintme`
 
     /help - Show this help message
     """
