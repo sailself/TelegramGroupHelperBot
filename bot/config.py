@@ -148,6 +148,7 @@ PROFILEME_SYSTEM_PROMPT = (
     "Focus on patterns and recurring themes. Address the user directly (e.g., 'You seem to be...')."
     "Keep it friendly and respectful. Do not include any specific message content, timestamps or message IDs."
     "The user is asking for their own profile."
+    "CRITICAL: Always reply in Chinese"
 )
 
 # Prompt for the /paintme handler (image prompt generation)

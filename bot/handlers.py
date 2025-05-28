@@ -1081,11 +1081,6 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             limit=USER_HISTORY_MESSAGE_COUNT 
         )
         
-        # paintme handler previously used latest 50. We fetch USER_HISTORY_MESSAGE_COUNT, 
-        # then slice to the most recent 50 if more are returned.
-        # This respects the new centralized fetching logic while keeping paintme's specific need.
-        if len(user_messages) > 50:
-            user_messages = user_messages[-50:]
 
         if not user_messages or len(user_messages) < 5: # Need a few messages at least
             await processing_message.edit_text(
