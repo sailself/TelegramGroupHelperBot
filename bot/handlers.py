@@ -505,7 +505,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             image_data_list=image_data_list if image_data_list else None,
             video_data=video_data,
             video_mime_type=video_mime_type,
-            use_pro_model=True
+            use_pro_model=use_pro_model
         )
         
         # Process the streamed response
@@ -717,6 +717,24 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     else:
         prompt = ""
 
+    # Get potential image from a replied message
+    replied_message = update.effective_message.reply_to_message
+    image_url = None
+    
+    if replied_message:
+        if replied_message.photo and not USE_VERTEX_IMAGE:
+            # Get the largest photo (last in the array)
+            photo = replied_message.photo[-1]
+            photo_file = await context.bot.get_file(photo.file_id)
+            image_url = photo_file.file_path
+        
+        replied_text_content = replied_message.text or replied_message.caption or ""
+        if replied_text_content:
+            if prompt: 
+                prompt = f"{replied_text_content}\n\n{prompt}"
+            else: 
+                prompt = replied_text_content
+
     if not prompt:
         await update.effective_message.reply_text(
             "Please provide a description of the image you want to generate or edit. "
@@ -724,15 +742,6 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # Get potential image from a replied message
-    replied_message = update.effective_message.reply_to_message
-    image_url = None
-    
-    if replied_message and replied_message.photo:
-        # Get the largest photo (last in the array)
-        photo = replied_message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
-        image_url = photo_file.file_path
 
     # Send a processing message
     processing_message = await update.effective_message.reply_text(

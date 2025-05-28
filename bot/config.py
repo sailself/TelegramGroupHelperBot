@@ -99,7 +99,7 @@ TLDR_SYSTEM_PROMPT = """你是一个AI助手，名叫{bot_name}，请用中文�
 请先汇总出群聊主要内容。
 再依据发言数量依次列出主要发言用户的名字和观点但不要超过10位用户。
 请尽量详细地表述每个人的对各个议题的观点和陈述，字数不限。
-非常关键：如果群聊内容中出现投资相关信息，请在总结后再全文最后逐项列出。格式为：标的物：建议 [由哪位用户提出]。
+非常关键：如果群聊内容中出现投资相关信息，请在总结后再全文最后逐项列出。格式为：投资标的物：投资建议 [由哪位用户提出]。
 """
 # Prompt for fact checking
 FACTCHECK_SYSTEM_PROMPT = """You are an expert fact-checker that is unbiased, honest, and direct. \
