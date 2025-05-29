@@ -1118,7 +1118,7 @@ async def generate_image_with_vertex(
                             logger.error(f"Vertex AI (genai.Client): Error processing image data: {img_proc_err}", exc_info=True)
                     if enhanced_prompt is None and generated_image.enhanced_prompt is not None:
                         enhanced_prompt = generated_image.enhanced_prompt
-                elif hasattr(generated_image, 'rai_filtered_reason'):
+                if hasattr(generated_image, 'rai_filtered_reason'):
                     logger.error(f"Vertex AI (genai.Client): Error generating image with RAI reason: {generated_image.rai_filtered_reason}")
                 if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
                     break

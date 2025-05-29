@@ -729,7 +729,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     image_url = None
     
     if replied_message:
-        if replied_message.photo and not USE_VERTEX_IMAGE:
+        if replied_message.photo:
             # Get the largest photo (last in the array)
             photo = replied_message.photo[-1]
             photo_file = await context.bot.get_file(photo.file_id)
@@ -738,7 +738,8 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         replied_text_content = replied_message.text or replied_message.caption or ""
         if replied_text_content:
             if prompt: 
-                prompt = f"{replied_text_content}\n\n{prompt}"
+                if not image_url:
+                    prompt = f"{replied_text_content}\n\n{prompt}"
             else: 
                 prompt = replied_text_content
 
@@ -756,7 +757,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
     
     try:
-        if USE_VERTEX_IMAGE:
+        if USE_VERTEX_IMAGE and not image_url:
             logger.info(f"img_handler operating in Vertex AI mode for prompt: '{prompt}'")
             # For Vertex, we are not currently supporting editing an existing image URL.
             # The generate_image_with_vertex function currently only takes a prompt.
