@@ -1054,8 +1054,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /q [question] - Ask me any question or analyze images\n"
         "• /img [description] - Generate or edit an image using Gemini\n"
         "• /vid [prompt] - Generate a video based on text and/or a replied-to image.\n"
-    "• /profileme - Generate your user profile based on your chat history.\n"
-    "• /paintme - Generate an image representing you based on your chat history.\n"
+        "• /profileme - Generate your user profile based on your chat history.\n"
+        "• /paintme - Generate an image representing you based on your chat history.\n"
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
@@ -1229,9 +1229,21 @@ async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             # We already know it's the user's message, so no need to repeat username
             formatted_history += f"{timestamp}: {msg.text}\n"
         
+        system_prompt = PROFILEME_SYSTEM_PROMPT
+        MAX_CUSTOM_PROMPT_LENGTH = 80
+        custom_prompt = (update.effective_message.text or "").replace("/profileme", "", 1).strip()
+        custom_prompt = custom_prompt[:MAX_CUSTOM_PROMPT_LENGTH]
+
+        if custom_prompt:
+            # Add style instruction if custom prompt is provided
+            system_prompt = f"{system_prompt}\n\nStyle Instruction: {custom_prompt}"
+        else:
+            # Use a more specific default style
+            system_prompt = f"{system_prompt}\n\nStyle Instruction: Keep the profile professional, friendly and respectful."
+
         # Generate profile using Gemini
         profile_response = await call_gemini(
-            system_prompt=PROFILEME_SYSTEM_PROMPT, # Use imported constant
+            system_prompt=system_prompt,
             user_content=formatted_history,
             use_search_grounding=False # Probably not needed for profiling
         )
@@ -1284,7 +1296,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     Or: `/vid` (replying to an image with an optional text prompt in the caption or command)
 
     /profileme - Generate your user profile based on your chat history in this group.
-    Usage: `/profileme`
+    Usage: `/profileme` 
+    Or: `/profileme [Language style of the profile]`
 
     /paintme - Generate an image representing you based on your chat history in this group.
     Usage: `/paintme`
