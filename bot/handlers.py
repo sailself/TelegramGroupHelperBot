@@ -16,6 +16,7 @@ from telegram import Update, InputMediaPhoto
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
+import re
 
 from bot.config import (
     RATE_LIMIT_SECONDS, 
@@ -409,6 +410,31 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception:
             pass
 
+def extract_youtube_urls(text: str, max_urls: int = 10):
+    """Extract up to max_urls YouTube video URLs (including shorts) from the given text and replace them with a marker.
+    Returns (modified_text, list_of_urls).
+    """
+    if not text:
+        return text, []
+    # Regex for YouTube URLs (full, short, and shorts)
+    pattern = r"((?:https?://)?(?:www\.|m\.)?(?:youtube\.com/(?:watch\?v=|shorts/)|youtu\.be/)([\w-]{11})(?:[\?&][^\s]*)?)"
+    matches = list(re.finditer(pattern, text))
+    urls = []
+    new_text = text
+    count = 0
+    for match in reversed(matches):  # reversed so replacement doesn't affect indices
+        if count >= max_urls:
+            break
+        full_url = match.group(0)
+        vid_id = match.group(2)
+        url = f"https://www.youtube.com/watch?v={vid_id}"
+        urls.insert(0, url)  # maintain order
+        # Replace the entire matched URL in text
+        start, end = match.span(0)
+        new_text = new_text[:start] + f"YouTube_{vid_id}" + new_text[end:]
+        count += 1
+    return new_text, urls
+
 async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /factcheck command.
 
@@ -480,6 +506,9 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             "Cannot fact-check an empty message with no media (image/video)."
         )
         return
+    if message_to_check and not video_data and not image_data_list: # If message is present and no media is present, extract YouTube URLs
+        # Extract YouTube URLs and replace in text
+        message_to_check, youtube_urls = extract_youtube_urls(message_to_check)
     
     # Default prompt if only media is present
     if not message_to_check:
@@ -495,6 +524,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         processing_message_text = "Analyzing video and fact-checking content..."
     elif image_data_list:
         processing_message_text = f"Analyzing {len(image_data_list)} image(s) and fact-checking content..."
+    elif youtube_urls and len(youtube_urls) > 0:
+        processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and fact-checking content..."
     
     processing_message = await update.effective_message.reply_text(processing_message_text)
     
@@ -512,7 +543,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             image_data_list=image_data_list if image_data_list else None,
             video_data=video_data,
             video_mime_type=video_mime_type,
-            use_pro_model=use_pro_model
+            use_pro_model=use_pro_model,
+            youtube_urls=youtube_urls
         )
         
         # Process the streamed response
@@ -627,7 +659,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception as e:
                     logger.error(f"Error downloading single image for /q: {e}", exc_info=True)
         
-        if not query and not image_data_list and not video_data: # Corrected Python 'and'
+        if not query and not image_data_list and not video_data:
             await update.effective_message.reply_text(
                 "Please provide a question, reply to media, or caption media with /q."
             )
@@ -636,12 +668,18 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not query: # Default prompt if only media is present
             if video_data: query = "Please analyze this video."
             elif image_data_list: query = "Please analyze these image(s)."
+        
+        if query and not video_data and not image_data_list: # If query is present and no media is present, extract YouTube URLs
+            # Extract YouTube URLs and replace in text
+            query, youtube_urls = extract_youtube_urls(query)
 
         processing_message_text = "Processing your question..."
         if video_data:
             processing_message_text = "Analyzing video and processing your question..."
         elif image_data_list:
             processing_message_text = f"Analyzing {len(image_data_list)} image(s) and processing your question..."
+        elif youtube_urls and len(youtube_urls) > 0:
+            processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and processing your question..."
         
         processing_message = await update.effective_message.reply_text(processing_message_text)
         
@@ -676,7 +714,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             image_data_list=image_data_list if image_data_list else None,
             video_data=video_data,
             video_mime_type=video_mime_type,
-            use_pro_model=use_pro_model 
+            use_pro_model=use_pro_model,
+            youtube_urls=youtube_urls
         )
         
         if response:
