@@ -185,7 +185,7 @@ async def call_gemini(
     logger.info(f"Using search grounding: {use_search_grounding}")
     
     # Combine system prompt and user content
-    combined_prompt = f"{system_prompt}\n\n{user_content}"
+    # combined_prompt = f"{system_prompt}\n\n{user_content}"
     
     try:
         if video_data and video_mime_type:
@@ -255,6 +255,8 @@ async def call_gemini(
             logger.info("Using URL Context for this request")
         if tools:
             config["tools"] = tools
+        if system_prompt:
+            config["system_instruction"] = system_prompt
         
         model = GEMINI_MODEL
         if use_pro_model:
@@ -266,7 +268,7 @@ async def call_gemini(
         response = await asyncio.to_thread(
             get_gemini_client().models.generate_content,
             model=model,
-            contents=combined_prompt,
+            contents=user_content,
             config=config
         )
         
@@ -332,7 +334,7 @@ async def call_gemini_vision(
             user_content += f"\n\nPlease reply in {response_language}."
         
         # Combine system prompt and user content
-        combined_prompt = f"{system_prompt}\n\n{user_content}"
+        # combined_prompt = f"{system_prompt}\n\n{user_content}"
         
         # Configure generation parameters
         config = {
@@ -353,9 +355,11 @@ async def call_gemini_vision(
             logger.info("Using URL Context for this request")
         if tools:
             config["tools"] = tools
+        if system_prompt:
+            config["system_instruction"] = system_prompt
         
         # Create the content parts for the request
-        contents = [combined_prompt]
+        contents = [user_content]
         log_media_info = "no media"
 
         if video_data and video_mime_type:
@@ -656,7 +660,7 @@ async def stream_gemini(
     logger.info(f"Stream - Using search grounding: {use_search_grounding}")
     
     # Combine system prompt and user content
-    combined_prompt = f"{system_prompt}\n\n{user_content}"
+    # combined_prompt = f"{system_prompt}\n\n{user_content}"
     
     # Use threading to avoid blocking
     async def stream_worker() -> None:
@@ -681,6 +685,8 @@ async def stream_gemini(
                 logger.info("Stream - Using URL Context")
             if tools:
                 config["tools"] = tools
+            if system_prompt:
+                config["system_instruction"] = system_prompt
             
             model = GEMINI_MODEL
             if use_pro_model:
@@ -691,7 +697,7 @@ async def stream_gemini(
             stream_response = await asyncio.to_thread(
                 get_gemini_client().models.generate_content_stream,
                 model=model,
-                contents=combined_prompt,
+                contents=user_content,
                 config=config
             )
             
