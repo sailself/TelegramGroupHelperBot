@@ -469,6 +469,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     image_data_list: List[bytes] = []
     video_data: Optional[bytes] = None
     video_mime_type: Optional[str] = None
+    youtube_urls = None
     
     # Video processing (takes precedence)
     if replied_message.video:
@@ -613,6 +614,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         video_mime_type: Optional[str] = None
         target_message_for_media = None
         media_group_id_to_log = None
+        youtube_urls = None
 
         if update.effective_message.reply_to_message:
             target_message_for_media = update.effective_message.reply_to_message
