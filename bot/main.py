@@ -65,6 +65,7 @@ def main():
     application.add_handler(CommandHandler("vid", vid_handler))
     application.add_handler(CommandHandler("profileme", profileme_handler))
     application.add_handler(CommandHandler("paintme", paintme_handler))
+    application.add_handler(CommandHandler("portraitme", paintme_handler))
     
     # Add a message handler to log all messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))

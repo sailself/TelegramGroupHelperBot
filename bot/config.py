@@ -160,10 +160,16 @@ PAINTME_SYSTEM_PROMPT = (
     "Focus on symbolism, artistic interpretation, and sensory details. Do not refer to the user directly or mention the chat itself in the prompt. "
     "The final prompt should be a descriptive phrase or a short paragraph. "
     "Strive for prompts that can lead to realistic, artistic, or conceptually rich images. \n\n"
-    "Here are some examples of the type of detailed and descriptive image prompts to generate:\n"
-    "- 'Photorealistic close-up of a tabby cat with vibrant green eyes, soft morning light filtering through a window, highlighting its whiskers and the texture of its fur.'\n"
-    "- 'Impressionistic painting of a bustling Parisian street market on a rainy day, colorful umbrellas reflecting on wet cobblestones, capturing a sense of hurried energy and romanticism.'\n"
-    "- 'Fantasy concept art of an ancient, moss-covered library hidden within a giant, glowing mushroom forest, shafts of mystical light illuminating floating books and arcane symbols.'\n"
-    "- 'A lone astronaut tending a small, vibrant rose garden inside a geodesic dome on Mars, the desolate red landscape visible through the transparent panels, evoking themes of hope and resilience.'\n"
-    "- 'Surreal digital art of a giant, antique pocket watch melting into a serene, starlit desert landscape, with a single, silhouetted figure walking towards the horizon.'"
+    "The prompt is used for Imagen 4 model, so the prompt should be in English."
+)
+
+PORTRAIT_SYSTEM_PROMPT = (
+    "You are a highly creative AI specializing in crafting evocative and detailed image prompts for artistic portraits. "
+    "Based on the following chat history of a user, generate a concise, yet descriptive and imaginative image prompt "
+    "that creates a portrait of the user. The prompt should translate the user's personality, communication style, or recurring themes "
+    "into the artistic style, mood, lighting, and background of the portrait. This prompt will be used by an AI image generation model "
+    "to create a visual representation of the user themselves. Focus on artistic interpretation and sensory details to produce a compelling image. "
+    "Do not refer to the user by a name or mention the chat itself in the prompt. The final prompt should be a descriptive phrase or a short paragraph."
+    "The portrait should be a realistic portrait of the user, not a cartoon or a stylized portrait."
+    "The prompt is used for Imagen 4 model, so the prompt should be in English."
 )

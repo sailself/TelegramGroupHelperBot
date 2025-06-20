@@ -32,6 +32,7 @@ from bot.config import (
     TELEGRAPH_AUTHOR_URL,
     USE_VERTEX_IMAGE,
     VERTEX_IMAGE_MODEL,
+    PORTRAIT_SYSTEM_PROMPT,
 )
 from bot.db.database import ( # Reformatted for clarity
     queue_message_insert, 
@@ -1120,8 +1121,16 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.effective_message.reply_text("Rate limit exceeded. Please try again later.")
         return
 
+    isPortrait = update.effective_message.text.lower().startswith("/portraitme")
+    if isPortrait:
+        system_prompt = PORTRAIT_SYSTEM_PROMPT
+        reply_text_part = "create you a portrait"
+    else:
+        system_prompt = PAINTME_SYSTEM_PROMPT
+        reply_text_part = "paint you a picture"
+
     processing_message = await update.effective_message.reply_text(
-        "Let me paint you a picture based on your recent chats... This might take a moment."
+        f"Let me {reply_text_part} based on your recent chats... This might take a moment."
     )
 
     try:
@@ -1135,7 +1144,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         if not user_messages or len(user_messages) < 5: # Need a few messages at least
             await processing_message.edit_text(
-                "I don't have enough of your messages (at least 5 recent ones) in this chat to paint a picture. Keep chatting!"
+                f"I don't have enough of your messages (at least 5 recent ones) in this chat to {reply_text_part}. Keep chatting!"
             )
             return
 
@@ -1146,7 +1155,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         
         # 3. Generate image prompt with Gemini
         image_prompt = await call_gemini(
-            system_prompt=PAINTME_SYSTEM_PROMPT, # Use imported constant
+            system_prompt=system_prompt, # Use imported constant
             user_content=formatted_history,
             use_search_grounding=False
         )
@@ -1163,7 +1172,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
         # 4. Generate Image
         if USE_VERTEX_IMAGE:
-            logger.info(f"paintme_handler: Using Vertex AI for image generation with prompt: '{image_prompt}'")
+            logger.info(f"{'portrait' if isPortrait else 'paint'}me_handler: Using Vertex AI for image generation with prompt: '{image_prompt}'")
             images_data_list = await generate_image_with_vertex(prompt=image_prompt, number_of_images=1) # Generate 1 for this command
             
             if images_data_list and images_data_list[0]:
@@ -1176,11 +1185,11 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 await processing_message.delete()
             else:
-                logger.error("paintme_handler: Vertex AI image generation failed or returned no image.")
-                await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't paint your picture. Please try again.")
+                logger.error(f"{'portrait' if isPortrait else 'paint'}me_handler: Vertex AI image generation failed or returned no image.")
+                await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't {reply_text_part}. Please try again.")
         
         else: # Use Gemini for image generation
-            logger.info(f"paintme_handler: Using Gemini for image generation with prompt: '{image_prompt}'")
+            logger.info(f"{'portrait' if isPortrait else 'paint'}me_handler: Using Gemini for image generation with prompt: '{image_prompt}'")
             # System prompt for Gemini image generation can be simple
             gemini_image_system_prompt = "Generate an image based on the following description."
             image_data = await generate_image_with_gemini(
@@ -1197,8 +1206,8 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 await processing_message.delete()
             else:
-                logger.warning("paintme_handler: Gemini image generation failed.")
-                await processing_message.edit_text("Sorry, Gemini couldn't paint your picture. Please try again.")
+                logger.warning(f"{'portrait' if isPortrait else 'paint'}me_handler: Gemini image generation failed.")
+                await processing_message.edit_text(f"Sorry, Gemini couldn't {reply_text_part}. Please try again.")
         
         # Log the command usage
         language, _ = langid.classify(formatted_history) # Use history for language context
@@ -1212,7 +1221,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await queue_message_insert(
             user_id=user_id,
             username=username,
-            text=update.effective_message.text or "/paintme", # Log the command itself
+            text=update.effective_message.text, # Log the command itself
             language=language, # Could be 'xx' if history is very short/non-textual
             date=update.effective_message.date,
             chat_id=update.effective_chat.id,
@@ -1223,7 +1232,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         logger.error(f"Error in paintme_handler: {e}", exc_info=True)
         try:
             await processing_message.edit_text(
-                f"Sorry, an unexpected error occurred while painting your picture: {str(e)}"
+                f"Sorry, an unexpected error occurred while {'creating your portrait' if isPortrait else 'painting your picture'}: {str(e)}"
             )
         except Exception: 
             pass
@@ -1343,6 +1352,9 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     /paintme - Generate an image representing you based on your chat history in this group.
     Usage: `/paintme`
+
+    /portraitme - Generate a portrait of you based on your chat history in this group.
+    Usage: `/portraitme`
 
     /help - Show this help message
     """
