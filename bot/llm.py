@@ -3,10 +3,8 @@
 import asyncio
 import base64
 import logging
-import os
-import mimetypes
 from io import BytesIO
-from typing import List, Optional, Union, Any
+from typing import List, Optional
 
 import aiohttp
 import google.genai as genai
@@ -31,8 +29,6 @@ from bot.config import (
     VERTEX_IMAGE_MODEL,
 )
 import time # Added for polling
-# from google.cloud import aiplatform # Removed as per refactoring task
-# from google.cloud.aiplatform_v1beta1.types import content as gapic_content_types # May not be needed
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -60,8 +56,6 @@ def get_vertex_client():
     if USE_VERTEX_IMAGE or USE_VERTEX_VIDEO:
         if _global_vertex_client is None:
             logger.info("Initializing global Vertex client.")
-            # Assuming genai.Client can handle Vertex AI image models too.
-            # If not, this might need to be aiplatform.PredictionServiceClient or similar
             _global_vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
     return _global_vertex_client
 
@@ -185,10 +179,7 @@ async def call_gemini(
     logger.info(f"System prompt: {system_prompt}")
     logger.info(f"User content: {user_content}")
     logger.info(f"Using search grounding: {use_search_grounding}")
-    
-    # Combine system prompt and user content
-    # combined_prompt = f"{system_prompt}\n\n{user_content}"
-    
+        
     try:
         if video_data and video_mime_type:
             logger.info(f"Processing with provided video data (MIME: {video_mime_type}).")
@@ -273,8 +264,7 @@ async def call_gemini(
         else:
             logger.info("Using Standard model for Gemini")
         # Make the API call
-        response = await asyncio.to_thread(
-            get_gemini_client().models.generate_content,
+        response = await get_gemini_client().aio.models.generate_content(
             model=model,
             contents=user_content,
             config=config
@@ -341,10 +331,7 @@ async def call_gemini_vision(
         # Format the user content with language if specified
         if response_language:
             user_content += f"\n\nPlease reply in {response_language}."
-        
-        # Combine system prompt and user content
-        # combined_prompt = f"{system_prompt}\n\n{user_content}"
-        
+                
         # Configure generation parameters
         config = {
             "temperature": GEMINI_TEMPERATURE,
@@ -395,8 +382,7 @@ async def call_gemini_vision(
         logger.info(f"Using {'Pro' if use_pro_model else 'Standard'} model ({model_to_use}) for Gemini Vision with {log_media_info} and text")
         
         # Make the API call with text and media using the client.models method
-        response = await asyncio.to_thread(
-            get_gemini_client().models.generate_content,
+        response = await get_gemini_client().aio.models.generate_content(
             model=model_to_use,
             contents=contents,
             config=config
@@ -685,10 +671,7 @@ async def stream_gemini(
     logger.info(f"Stream - System prompt: {system_prompt}")
     logger.info(f"Stream - User content: {user_content}")
     logger.info(f"Stream - Using search grounding: {use_search_grounding}")
-    
-    # Combine system prompt and user content
-    # combined_prompt = f"{system_prompt}\n\n{user_content}"
-    
+        
     # Use threading to avoid blocking
     async def stream_worker() -> None:
         try:
@@ -721,8 +704,7 @@ async def stream_gemini(
             logger.info(f"Stream - Sending message to model: {model}")
             
             # For streaming, we need to handle the generate_content_stream method
-            stream_response = await asyncio.to_thread(
-                get_gemini_client().models.generate_content_stream,
+            stream_response = await get_gemini_client().aio.models.generate_content_stream(
                 model=model,
                 contents=user_content,
                 config=config
@@ -865,8 +847,7 @@ async def generate_image_with_gemini(
                 ]
                 
                 # Make the API call with both text and image
-                response = await asyncio.to_thread(
-                    get_gemini_client().models.generate_content,
+                response = await get_gemini_client().aio.models.generate_content(
                     model=model,
                     contents=contents,
                     config=config
@@ -884,8 +865,7 @@ async def generate_image_with_gemini(
             logger.info(f"Using model {model} for image generation")
             
             # Make the API call
-            response = await asyncio.to_thread(
-                get_gemini_client().models.generate_content,
+            response = await get_gemini_client().aio.models.generate_content(
                 model=model,
                 contents=image_generation_prompt,
                 config=config
@@ -947,16 +927,6 @@ async def generate_image_with_gemini(
         return None
 
 
-# Example usage of the test function (uncomment to run)
-# if __name__ == "__main__":
-#     import sys
-#     if len(sys.argv) > 1:
-#         image_url = sys.argv[1]
-#         asyncio.run(test_gemini_vision(image_url))
-#     else:
-#         print("Please provide an image URL as an argument") 
-
-
 async def generate_video_with_veo(
     system_prompt: str, 
     user_prompt: str, 
@@ -977,7 +947,6 @@ async def generate_video_with_veo(
     logger.info(f"System prompt (prepended): {system_prompt[:100]}...")
     logger.info(f"User prompt: {user_prompt[:100]}...")
     
-    # combined_prompt = f"{system_prompt}\n\n{user_prompt}"
     combined_prompt = user_prompt
 
     if image_data:
@@ -1003,16 +972,16 @@ async def generate_video_with_veo(
                 img_mime_type = detect_mime_type(image_data)
                 if not img_mime_type.startswith("image/"):
                     logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
-                else: # Reverted
+                else:
                     logger.info(f"Image data received with MIME type: {img_mime_type}")
             except Exception as e:
                 logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
                 image_part = None # Ensure it's None if processing failed
         
-        video_config = types.GenerateVideosConfig( # Reverted
-            person_generation="allow_adult", # As per example
-            aspect_ratio="16:9",          # As per example
-            number_of_videos=1            # As per example
+        video_config = types.GenerateVideosConfig(
+            person_generation="allow_adult",
+            aspect_ratio="16:9",
+            number_of_videos=1
         )
         logger.info(f"Video generation config: {video_config}")
 
@@ -1116,7 +1085,7 @@ async def generate_image_with_vertex(
         # Configuration for image generation.        
         logger.info(f"Calling Vertex AI model {VERTEX_IMAGE_MODEL} via genai.Client.generate_content with candidate_count={number_of_images}")
 
-        response = vertex_client.models.generate_images(
+        response = await vertex_client.aio.models.generate_images(
                 model=VERTEX_IMAGE_MODEL,
                 prompt=prompt,
                 config=types.GenerateImagesConfig(
