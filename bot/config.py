@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, cast
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv()  
 
 # Create logs directory if it doesn't exist
 logs_dir = Path("logs")
@@ -96,6 +96,9 @@ TELEGRAPH_AUTHOR_URL = os.getenv("TELEGRAPH_AUTHOR_URL", "")
 
 # Number of messages to fetch for user-specific history features
 USER_HISTORY_MESSAGE_COUNT = int(os.getenv("USER_HISTORY_MESSAGE_COUNT", "200"))
+
+# MCP server path
+MCP_SERVER_PATH = os.getenv("MCP_SERVER_PATH")
 
 # Prompt for a short summary
 TLDR_SYSTEM_PROMPT = """你是一个AI助手，名叫{bot_name}，请用中文总结以下群聊内容。

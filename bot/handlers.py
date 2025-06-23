@@ -24,9 +24,9 @@ from bot.config import (
     TLDR_SYSTEM_PROMPT, 
     FACTCHECK_SYSTEM_PROMPT, 
     Q_SYSTEM_PROMPT,
-    PROFILEME_SYSTEM_PROMPT, # Added
-    PAINTME_SYSTEM_PROMPT,   # Added
-    USER_HISTORY_MESSAGE_COUNT, # Added
+    PROFILEME_SYSTEM_PROMPT,
+    PAINTME_SYSTEM_PROMPT,
+    USER_HISTORY_MESSAGE_COUNT,
     TELEGRAPH_ACCESS_TOKEN,
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL,
@@ -37,13 +37,12 @@ from bot.config import (
 from bot.db.database import ( # Reformatted for clarity
     queue_message_insert, 
     select_messages_from_id, 
-    select_messages_by_user # Added
+    select_messages_by_user
 )
 from bot.llm import (
-    call_gemini, 
-    stream_gemini, 
+    call_gemini,
     generate_image_with_gemini, 
-    generate_image_with_vertex, # Added
+    generate_image_with_vertex,
     download_media, 
     generate_video_with_veo
 )
@@ -538,7 +537,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         use_pro_model = bool(video_data or image_data_list) # Use Pro model if media is present
         
         # Get response from Gemini with fact checking
-        response_queue = await stream_gemini(
+        full_response = await call_gemini(
             system_prompt=system_prompt,
             user_content=message_to_check,
             response_language=language,
@@ -546,11 +545,9 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             video_data=video_data,
             video_mime_type=video_mime_type,
             use_pro_model=use_pro_model,
-            youtube_urls=youtube_urls
+            youtube_urls=youtube_urls,
+            fact_check=True
         )
-        
-        # Process the streamed response
-        full_response = ""
 
         resp_msg = "Checking facts"
         if video_data:
@@ -564,16 +561,6 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             resp_msg = f"{resp_msg}..."
             
         await processing_message.edit_text(resp_msg, parse_mode=None)
-        
-        # Process chunks from the queue
-        while True:
-            chunk = await response_queue.get()
-            
-            if chunk is None:
-                # End of stream
-                break
-                
-            full_response = chunk
         
         # Final update with complete response
         if full_response:

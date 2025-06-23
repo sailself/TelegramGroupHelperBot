@@ -27,8 +27,64 @@ from bot.config import (
     VERTEX_VIDEO_MODEL,
     USE_VERTEX_IMAGE,
     VERTEX_IMAGE_MODEL,
+    MCP_SERVER_PATH,
 )
 import time # Added for polling
+from pydantic import BaseModel
+from fastmcp import Client
+
+
+class FactCheckDetails(BaseModel):
+    claim: str
+    judgement: str
+    reasoning: str
+    sources: list[str]
+
+class FactCheckResponse(BaseModel):
+    summary: str
+    facts: list[FactCheckDetails]
+    language: str
+
+def factcheck_response_to_markdown(resp: FactCheckResponse) -> str:
+    """Convert a FactCheckResponse object to a markdown string, with Chinese or English section titles based on language."""
+    zh = resp.language and resp.language.lower().startswith("zh")
+    if zh:
+        summary_title = "**总结：**"
+        facts_title = "**事实核查：**"
+        claim_title = "### 观点"
+        claim_field = "**观点：**"
+        judgement_field = "**判断：**"
+        reasoning_field = "**理由：**"
+        sources_field = "**来源：**"
+        language_field = "_语言：中文_"
+    else:
+        summary_title = "**Summary:**"
+        facts_title = "**Fact-checked Claims:**"
+        claim_title = "### Claim"
+        claim_field = "**Claim:**"
+        judgement_field = "**Judgement:**"
+        reasoning_field = "**Reasoning:**"
+        sources_field = "**Sources:**"
+        language_field = f"_Language: {resp.language}_" if resp.language else ""
+
+    lines = []
+    if resp.summary:
+        lines.append(f"{summary_title}\n{resp.summary}\n")
+    if resp.facts:
+        lines.append(f"{facts_title}\n")
+        for i, fact in enumerate(resp.facts, 1):
+            lines.append(f"{claim_title} {i}")
+            lines.append(f"{claim_field} {fact.claim}")
+            lines.append(f"{judgement_field} {fact.judgement}")
+            lines.append(f"{reasoning_field} {fact.reasoning}")
+            if fact.sources:
+                lines.append(f"{sources_field}")
+                for src in fact.sources:
+                    lines.append(f"- {src}")
+            lines.append("")
+    if language_field:
+        lines.append(language_field)
+    return '\n'.join(lines).strip()
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -59,8 +115,20 @@ def get_vertex_client():
             _global_vertex_client = genai.Client(vertexai=True, project=VERTEX_PROJECT_ID, location=VERTEX_LOCATION)
     return _global_vertex_client
 
-# Safety settings for the models
+_global_mcp_client = None
 
+def get_mcp_client():
+    """Lazily initializes and returns the global MCP client."""
+    global _global_mcp_client
+    if MCP_SERVER_PATH:
+        if _global_mcp_client is None:
+            logger.info(f"Initializing global MCP client from {MCP_SERVER_PATH}.")
+            _global_mcp_client = Client(MCP_SERVER_PATH)
+    return _global_mcp_client
+
+
+
+# Safety settings for the models
 _safety_settings = [
     {
         "category": "HARM_CATEGORY_HARASSMENT",
@@ -152,6 +220,7 @@ async def call_gemini(
     video_data: Optional[bytes] = None,
     video_mime_type: Optional[str] = None,
     youtube_urls: Optional[List[str]] = None,
+    fact_check: bool = False,
 ) -> str:
     """Call the Gemini API with the given prompts.
     
@@ -191,7 +260,8 @@ async def call_gemini(
                 use_search_grounding=use_search_grounding,
                 use_url_context=use_url_context,
                 response_language=response_language,
-                use_pro_model=use_pro_model
+                use_pro_model=use_pro_model,
+                fact_check=fact_check
             )
         elif image_data_list:
             logger.info(f"Processing with {len(image_data_list)} provided image(s).")
@@ -202,7 +272,8 @@ async def call_gemini(
                 use_search_grounding=use_search_grounding,
                 use_url_context=use_url_context,
                 response_language=response_language,
-                use_pro_model=use_pro_model
+                use_pro_model=use_pro_model,
+                fact_check=fact_check
             )
         elif image_url: 
             logger.info(f"Processing with single image URL: {image_url}")
@@ -219,7 +290,8 @@ async def call_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
-                    use_pro_model=use_pro_model
+                    use_pro_model=use_pro_model,
+                    fact_check=fact_check
                 )
         elif youtube_urls and len(youtube_urls) > 0:
             logger.info(f"Processing with {len(youtube_urls)} YouTube video(s).")
@@ -230,7 +302,8 @@ async def call_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
-                    use_pro_model=use_pro_model
+                    use_pro_model=use_pro_model,
+                    fact_check=fact_check
                 )
 
         # If no media (video, image_data_list, or downloadable image_url), proceed with text-only call
@@ -243,40 +316,60 @@ async def call_gemini(
             "safety_settings": _safety_settings,
         }
         
+        response = None
         # Add search tool if enabled
         # Build the tools list based on enabled features
         tools = []
-        if use_search_grounding:
-            tools.append({"google_search": {}})
-            logger.info("Using Google Search Grounding for this request")
-        if use_url_context:
-            tools.append({"url_context": {}})
-            logger.info("Using URL Context for this request")
-        if tools:
-            config["tools"] = tools
-        if system_prompt:
-            config["system_instruction"] = system_prompt
+        # if use_search_grounding:
+        #     tools.append({"google_search": {}})
+        #     logger.info("Using Google Search Grounding for this request")
+        # if use_url_context:
+        #     tools.append({"url_context": {}})
+        #     logger.info("Using URL Context for this request")
+        try:
+            mcp_client = get_mcp_client()
+            async with mcp_client:
+                mcp_client_session = mcp_client.session
+                if mcp_client_session:
+                    tools.append(mcp_client_session)
+                    logger.info("Using MCP Client for this request")
+                if tools:
+                    config["tools"] = tools
+                if system_prompt:
+                    config["system_instruction"] = system_prompt
+
+                model = GEMINI_MODEL
+                if use_pro_model:
+                    model = GEMINI_PRO_MODEL
+                    logger.info("Using Pro model for Gemini")
+                else:
+                    logger.info("Using Standard model for Gemini")
+                # Make the API call
+                response = await get_gemini_client().aio.models.generate_content(
+                    model=model,
+                    contents=user_content,
+                    config=config
+                )
+                # Log the response details
+                logger.info(f"Response received. Has text: {hasattr(response, 'text')}")
+                if hasattr(response, 'text') and response.text:
+                    logger.info(f"Response text (first 100 chars): {response.text[:100]}...")
+                
+                # if fact_check:
+                #     fc_resp: FactCheckResponse = response.parsed
+                #     return factcheck_response_to_markdown(fc_resp)
+                # Extract the text from the response
+                return response.text.strip() if response.text else "No response generated."
+        except Exception as e:
+            logger.error(f"Error with mcp client {e}")
+            
+        # Tool use and structured output is not compatible yet
+        # if fact_check:
+        #     config["response_mime_type"] = "application/json"
+        #     config["response_schema"] = FactCheckResponse
         
-        model = GEMINI_MODEL
-        if use_pro_model:
-            model = GEMINI_PRO_MODEL
-            logger.info("Using Pro model for Gemini")
-        else:
-            logger.info("Using Standard model for Gemini")
-        # Make the API call
-        response = await get_gemini_client().aio.models.generate_content(
-            model=model,
-            contents=user_content,
-            config=config
-        )
         
-        # Log the response details
-        logger.info(f"Response received. Has text: {hasattr(response, 'text')}")
-        if hasattr(response, 'text') and response.text:
-            logger.info(f"Response text (first 100 chars): {response.text[:100]}...")
         
-        # Extract the text from the response
-        return response.text.strip() if response.text else "No response generated."
         
     except Exception as e:
         logger.error(f"Error calling Gemini: {e}", exc_info=True)
@@ -290,7 +383,11 @@ async def call_gemini(
                 use_search_grounding=False, 
                 use_url_context=use_url_context,
                 use_pro_model=use_pro_model, # Retain pro_model choice
-                video_data=None, video_mime_type=None, image_data_list=None, image_url=None, youtube_urls=youtube_urls # Ensure no media in fallback
+                video_data=None, 
+                video_mime_type=None, 
+                image_data_list=None, 
+                image_url=None, 
+                youtube_urls=youtube_urls # Ensure no media in fallback
             )
         elif use_search_grounding and (video_data or image_data_list or image_url):
             logger.warning("Grounding failed with media. Re-raising the exception as fallback for media with no grounding is not defined.")
@@ -310,6 +407,7 @@ async def call_gemini_vision(
     video_data: Optional[bytes] = None,
     video_mime_type: Optional[str] = None,
     youtube_urls: Optional[List[str]] = None,
+    fact_check: bool = False,
 ) -> str:
     """Call the Gemini Vision API with text, and optionally image(s) or video.
     
@@ -353,6 +451,10 @@ async def call_gemini_vision(
             config["tools"] = tools
         if system_prompt:
             config["system_instruction"] = system_prompt
+        # Tool use and structured output is not compatible yet
+        # if fact_check:
+        #     config["response_mime_type"] = "application/json"
+        #     config["response_schema"] = FactCheckResponse
         
         # Create the content parts for the request
         contents = [user_content]
@@ -395,6 +497,9 @@ async def call_gemini_vision(
             logger.info(f"Vision response text sample: {text_sample}")
             # Base64 check might be less relevant if typical responses are textual explanations for media.
         
+        # if fact_check:
+        #     fc_resp: FactCheckResponse = response.parsed
+        #     return factcheck_response_to_markdown(fc_resp)
         # Extract the text from the response
         return response.text.strip() if response.text else "No response generated from media analysis."
         
@@ -564,6 +669,7 @@ async def stream_gemini(
     video_data: Optional[bytes] = None,
     video_mime_type: Optional[str] = None,
     youtube_urls: Optional[List[str]] = None,
+    fact_check: bool = False,
 ) -> asyncio.Queue:
     """Stream the Gemini API response.
     
@@ -601,7 +707,8 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
-                    use_pro_model=use_pro_model
+                    use_pro_model=use_pro_model,
+                    fact_check=fact_check
                 )
             elif image_data_list:
                 logger.info(f"Stream mode: Processing with {len(image_data_list)} provided image(s).")
@@ -614,7 +721,8 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
-                    use_pro_model=use_pro_model
+                    use_pro_model=use_pro_model,
+                    fact_check=fact_check
                 )
             elif image_url: 
                 logger.info(f"Stream mode: Processing with single image URL: {image_url}")
@@ -630,7 +738,8 @@ async def stream_gemini(
                     image_data_list=None, 
                     video_data=None,
                     video_mime_type=None,
-                    youtube_urls=youtube_urls
+                    youtube_urls=youtube_urls,
+                    fact_check=fact_check
                 )
             elif youtube_urls and len(youtube_urls) > 0:
                 response = await call_gemini_vision(
@@ -640,7 +749,8 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
-                    use_pro_model=use_pro_model
+                    use_pro_model=use_pro_model,
+                    fact_check=fact_check
                 )
             else: # Should ideally not be reached if the outer 'if' is true.
                  response = "Error: stream_gemini logic error in media handling."
@@ -697,6 +807,9 @@ async def stream_gemini(
                 config["tools"] = tools
             if system_prompt:
                 config["system_instruction"] = system_prompt
+            if fact_check:
+                config["response_mime_type"] = "application/json"
+                config["response_schema"] = FactCheckResponse
             
             model = GEMINI_MODEL
             if use_pro_model:
@@ -744,7 +857,8 @@ async def stream_gemini(
                     image_data_list=None,
                     video_data=None,
                     video_mime_type=None,
-                    youtube_urls=youtube_urls
+                    youtube_urls=youtube_urls,
+                    fact_check=fact_check
                 )
                 # Transfer items from the fallback queue to our queue
                 while True:
