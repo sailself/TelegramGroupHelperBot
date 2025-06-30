@@ -487,9 +487,27 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 logger.error(f"Failed to download video {replied_message.video.file_id} for fact-check.")
         except Exception as e:
             logger.error(f"Error processing video for fact-check: {e}", exc_info=True)
+
+    # Audio processing (takes precedence)
+    if not video_data:
+        audio = replied_message.audio if replied_message.audio else replied_message.voice
+        if audio: 
+            logger.info(f"Fact-checking audio: {audio.file_id}")
+            try:
+                audio_file = await context.bot.get_file(audio.file_id)
+                dl_audio_data = await download_media(audio_file.file_path)
+                if dl_audio_data:
+                    audio_data = dl_audio_data
+                    audio_mime_type = audio.mime_type
+                    image_data_list = [] # Clear images
+                    logger.info(f"Audio {audio.file_id} downloaded for fact-check. MIME: {audio_mime_type}")
+                else:
+                    logger.error(f"Failed to download audio {audio.file_id} for fact-check.")
+            except Exception as e:
+                logger.error(f"Error processing audio for fact-check: {e}", exc_info=True)
     
     # Photo processing (only if video was not processed)
-    if not video_data and replied_message.photo:
+    if not video_data and not audio_data and replied_message.photo:
         # Simplified to handle only the single photo from the replied message
         photo_size = replied_message.photo[-1]
         try:
@@ -501,12 +519,12 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         except Exception as e:
             logger.error(f"Error downloading single image for fact-check: {e}", exc_info=True)
 
-    if not message_to_check and not image_data_list and not video_data: # Corrected Python 'and'
+    if not message_to_check and not image_data_list and not video_data and not audio_data: 
         await update.effective_message.reply_text(
-            "Cannot fact-check an empty message with no media (image/video)."
+            "Cannot fact-check an empty message with no media (image/video/audio)."
         )
         return
-    if message_to_check and not video_data and not image_data_list: # If message is present and no media is present, extract YouTube URLs
+    if message_to_check and not video_data and not image_data_list and not audio_data: # If message is present and no media is present, extract YouTube URLs
         # Extract YouTube URLs and replace in text
         message_to_check, youtube_urls = extract_youtube_urls(message_to_check)
     
@@ -514,6 +532,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if not message_to_check:
         if video_data:
             message_to_check = "Please analyze this video and verify any claims or content shown in it."
+        elif audio_data:
+            message_to_check = "Please analyze this audio and verify any claims or content shown in it."
         elif image_data_list:
             message_to_check = "Please analyze these images and verify any claims or content shown in them."
         
@@ -522,6 +542,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     processing_message_text = "Fact-checking message..."
     if video_data:
         processing_message_text = "Analyzing video and fact-checking content..."
+    if audio_data:
+        processing_message_text = "Analyzing audio and fact-checking content..."
     elif image_data_list:
         processing_message_text = f"Analyzing {len(image_data_list)} image(s) and fact-checking content..."
     elif youtube_urls and len(youtube_urls) > 0:
@@ -533,7 +555,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         # Format the system prompt with the current date
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_datetime=current_datetime)
-        use_pro_model = bool(video_data or image_data_list) # Use Pro model if media is present
+        use_pro_model = bool(video_data or image_data_list or audio_data) # Use Pro model if media is present
         
         # Get response from Gemini with fact checking
         full_response = await call_gemini(
@@ -544,12 +566,16 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             video_data=video_data,
             video_mime_type=video_mime_type,
             use_pro_model=use_pro_model,
-            youtube_urls=youtube_urls
+            youtube_urls=youtube_urls,
+            audio_data=audio_data,
+            audio_mime_type=audio_mime_type
         )
 
         resp_msg = "Checking facts"
         if video_data:
             resp_msg = "Analyzing video and checking facts"
+        elif audio_data:
+            resp_msg = "Analyzing audio and checking facts"
         elif image_data_list:
             resp_msg = f"Analyzing {len(image_data_list)} image(s) and checking facts"
         
@@ -602,6 +628,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         media_group_id_to_log = None
         youtube_urls = None
         language = None
+        audio_data: Optional[bytes] = None
+        audio_mime_type: Optional[str] = None
 
         if update.effective_message.reply_to_message:
             target_message_for_media = update.effective_message.reply_to_message
@@ -636,8 +664,26 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception as e:
                     logger.error(f"Error processing video for /q: {e}", exc_info=True)
             
-            # Photo processing (only if video was not processed)
-            if not video_data and target_message_for_media.photo:
+            # Audio processing (takes precedence)
+            if not video_data:
+                audio = target_message_for_media.audio if target_message_for_media.audio else target_message_for_media.voice
+                if audio: 
+                    logger.info(f"Q handler processing audio: {audio.file_id}")
+                    try:
+                        audio_file = await context.bot.get_file(audio.file_id)
+                        dl_audio_data = await download_media(audio_file.file_path)
+                        if dl_audio_data:
+                            audio_data = dl_audio_data
+                            audio_mime_type = audio.mime_type
+                            image_data_list = [] # Clear images
+                            logger.info(f"Audio {audio.file_id} downloaded for /q. MIME: {audio_mime_type}")
+                        else:
+                            logger.error(f"Failed to download audio {audio.file_id} for /q.")
+                    except Exception as e:
+                        logger.error(f"Error processing audio for /q: {e}", exc_info=True)
+            
+            # Photo processing (only if video and audio was not processed)
+            if not video_data and not audio_data and target_message_for_media.photo:
                 # Simplified to handle only the single photo from the target message
                 photo_size = target_message_for_media.photo[-1]
                 try:
@@ -649,7 +695,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 except Exception as e:
                     logger.error(f"Error downloading single image for /q: {e}", exc_info=True)
         
-        if not query and not image_data_list and not video_data:
+        if not query and not image_data_list and not video_data and not audio_data:
             await update.effective_message.reply_text(
                 "Please provide a question, reply to media, or caption media with /q."
             )
@@ -657,15 +703,18 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         if not query: # Default prompt if only media is present
             if video_data: query = "Please analyze this video."
+            elif audio_data: query = "Please analyze this audio."
             elif image_data_list: query = "Please analyze these image(s)."
         
-        if query and not video_data and not image_data_list: # If query is present and no media is present, extract YouTube URLs
+        if query and not video_data and not image_data_list and not audio_data: # If query is present and no media is present, extract YouTube URLs
             # Extract YouTube URLs and replace in text
             query, youtube_urls = extract_youtube_urls(query)
 
         processing_message_text = "Processing your question..."
         if video_data:
             processing_message_text = "Analyzing video and processing your question..."
+        elif audio_data:
+            processing_message_text = "Analyzing audio and processing your question..."
         elif image_data_list:
             processing_message_text = f"Analyzing {len(image_data_list)} image(s) and processing your question..."
         elif youtube_urls and len(youtube_urls) > 0:
@@ -697,7 +746,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = Q_SYSTEM_PROMPT.format(current_datetime=current_datetime, language=language)
-        use_pro_model = bool(video_data or image_data_list) # Use Pro model if media is present
+        use_pro_model = bool(video_data or image_data_list or audio_data or youtube_urls) # Use Pro model if media is present
         
         response = await call_gemini(
             system_prompt=system_prompt,
@@ -706,7 +755,9 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             video_data=video_data,
             video_mime_type=video_mime_type,
             use_pro_model=use_pro_model,
-            youtube_urls=youtube_urls
+            youtube_urls=youtube_urls,
+            audio_data=audio_data,
+            audio_mime_type=audio_mime_type
         )
         
         if response:

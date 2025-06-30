@@ -152,6 +152,8 @@ async def call_gemini(
     video_data: Optional[bytes] = None,
     video_mime_type: Optional[str] = None,
     youtube_urls: Optional[List[str]] = None,
+    audio_data: Optional[bytes] = None,
+    audio_mime_type: Optional[str] = None,
 ) -> str:
     """Call the Gemini API with the given prompts.
     
@@ -167,6 +169,8 @@ async def call_gemini(
         video_data: Optional video data as bytes.
         video_mime_type: Optional MIME type for the video data.
         youtube_urls: Optional list of YouTube video URLs to provide as context.
+        audio_data: Optional audio data as bytes.
+        audio_mime_type: Optional MIME type for the audio data.
         
     Returns:
         The model's response.
@@ -183,7 +187,7 @@ async def call_gemini(
     try:
         if video_data and video_mime_type:
             logger.info(f"Processing with provided video data (MIME: {video_mime_type}).")
-            return await call_gemini_vision(
+            return await call_gemini_with_media(
                 system_prompt=system_prompt,
                 user_content=user_content,
                 video_data=video_data,
@@ -193,9 +197,21 @@ async def call_gemini(
                 response_language=response_language,
                 use_pro_model=use_pro_model
             )
+        elif audio_data and audio_mime_type:
+            logger.info(f"Processing with provided audio data (MIME: {audio_mime_type}).")
+            return await call_gemini_with_media(
+                system_prompt=system_prompt,
+                user_content=user_content,
+                audio_data=audio_data,
+                audio_mime_type=audio_mime_type,
+                use_search_grounding=use_search_grounding,
+                use_url_context=use_url_context,
+                response_language=response_language,
+                use_pro_model=use_pro_model
+            )
         elif image_data_list:
             logger.info(f"Processing with {len(image_data_list)} provided image(s).")
-            return await call_gemini_vision(
+            return await call_gemini_with_media(
                 system_prompt=system_prompt,
                 user_content=user_content,
                 image_data_list=image_data_list,
@@ -212,7 +228,7 @@ async def call_gemini(
                  # Proceed to text-only call by falling through
             else:
                 # Process with the vision model, passing the single image as a list
-                return await call_gemini_vision(
+                return await call_gemini_with_media(
                     system_prompt=system_prompt,
                     user_content=user_content,
                     image_data_list=[media_data],
@@ -223,7 +239,7 @@ async def call_gemini(
                 )
         elif youtube_urls and len(youtube_urls) > 0:
             logger.info(f"Processing with {len(youtube_urls)} YouTube video(s).")
-            return await call_gemini_vision(
+            return await call_gemini_with_media(
                     system_prompt=system_prompt,
                     user_content=user_content,
                     youtube_urls=youtube_urls,
@@ -281,7 +297,7 @@ async def call_gemini(
     except Exception as e:
         logger.error(f"Error calling Gemini: {e}", exc_info=True)
         # Fall back to non-grounding call if grounding fails
-        if use_search_grounding and not (video_data or image_data_list or image_url): # Fallback for text-only
+        if use_search_grounding and not (video_data or image_data_list or image_url or youtube_urls): # Fallback for text-only
             logger.info("Falling back to non-grounding call for text-only request.")
             return await call_gemini(
                 system_prompt=system_prompt, 
@@ -289,8 +305,7 @@ async def call_gemini(
                 response_language=response_language, 
                 use_search_grounding=False, 
                 use_url_context=use_url_context,
-                use_pro_model=use_pro_model, # Retain pro_model choice
-                video_data=None, video_mime_type=None, image_data_list=None, image_url=None, youtube_urls=youtube_urls # Ensure no media in fallback
+                use_pro_model=use_pro_model # Retain pro_model choice and Ensure no media in fallback
             )
         elif use_search_grounding and (video_data or image_data_list or image_url):
             logger.warning("Grounding failed with media. Re-raising the exception as fallback for media with no grounding is not defined.")
@@ -299,7 +314,7 @@ async def call_gemini(
             raise  # Re-raise the exception
 
 
-async def call_gemini_vision(
+async def call_gemini_with_media(
     system_prompt: str,
     user_content: str,
     image_data_list: Optional[List[bytes]] = None,
@@ -310,8 +325,10 @@ async def call_gemini_vision(
     video_data: Optional[bytes] = None,
     video_mime_type: Optional[str] = None,
     youtube_urls: Optional[List[str]] = None,
+    audio_data: Optional[bytes] = None,
+    audio_mime_type: Optional[str] = None,
 ) -> str:
-    """Call the Gemini Vision API with text, and optionally image(s) or video.
+    """Call the Gemini with media and text, including image(s), video or audio.
     
     Args:
         system_prompt: The system prompt.
@@ -324,6 +341,8 @@ async def call_gemini_vision(
         video_data: Optional video data as bytes.
         video_mime_type: Optional MIME type for the video data.
         youtube_urls: Optional list of YouTube video URLs to provide as context.
+        audio_data: Optional audio data as bytes.
+        audio_mime_type: Optional MIME type for the audio data.
     Returns:
         The model's response.
     """
@@ -362,14 +381,20 @@ async def call_gemini_vision(
             logger.info(f"Processing with video data, MIME type: {video_mime_type}.")
             if image_data_list and any(image_data_list): # check if list is not empty
                 logger.warning("Video data provided; image_data_list will be ignored as video takes precedence.")
-            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type))) # Reverted
+            contents.append(types.Part(inline_data=types.Blob(data=video_data, mime_type=video_mime_type)))
             log_media_info = f"video ({video_mime_type})"
+        elif audio_data and audio_mime_type:
+            logger.info(f"Processing with audio data, MIME type: {audio_mime_type}.")
+            if image_data_list and any(image_data_list): # check if list is not empty
+                logger.warning("Audio data provided; image_data_list will be ignored as audio takes precedence.")
+            contents.append(types.Part.from_bytes(data=audio_data, mime_type=audio_mime_type)) 
+            log_media_info = f"audio ({audio_mime_type})"
         elif image_data_list and any(image_data_list): # check if list is not empty
             logger.info(f"Processing with {len(image_data_list)} image(s).")
             for img_data in image_data_list:
                 mime_type = detect_mime_type(img_data) 
                 logger.info(f"Detected image MIME type: {mime_type} for one of the images.")
-                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type)) # Reverted
+                contents.append(types.Part.from_bytes(data=img_data, mime_type=mime_type))
             log_media_info = f"{len(image_data_list)} image(s)"
         elif youtube_urls and len(youtube_urls) > 0:
             logger.info(f"Processing with {len(youtube_urls)} YouTube video(s).")
@@ -565,7 +590,10 @@ async def stream_gemini(
     video_mime_type: Optional[str] = None,
     youtube_urls: Optional[List[str]] = None,
 ) -> asyncio.Queue:
-    """Stream the Gemini API response.
+    """[DEPRECATED] Stream the Gemini API response.
+    
+    This function is deprecated and will be removed in a future release.
+    Use the new Gemini streaming interface instead.
     
     Args:
         system_prompt: The system prompt.
@@ -592,7 +620,7 @@ async def stream_gemini(
         try:
             if video_data and video_mime_type:
                 logger.info(f"Stream mode: Processing with provided video data (MIME: {video_mime_type}).")
-                response = await call_gemini_vision(
+                response = await call_gemini_with_media(
                     system_prompt=system_prompt,
                     user_content=user_content,
                     video_data=video_data,
@@ -605,7 +633,7 @@ async def stream_gemini(
                 )
             elif image_data_list:
                 logger.info(f"Stream mode: Processing with {len(image_data_list)} provided image(s).")
-                response = await call_gemini_vision(
+                response = await call_gemini_with_media(
                     system_prompt=system_prompt,
                     user_content=user_content,
                     image_data_list=image_data_list,
@@ -633,7 +661,7 @@ async def stream_gemini(
                     youtube_urls=youtube_urls
                 )
             elif youtube_urls and len(youtube_urls) > 0:
-                response = await call_gemini_vision(
+                response = await call_gemini_with_media(
                     system_prompt=system_prompt,
                     user_content=user_content,
                     youtube_urls=youtube_urls,
