@@ -17,6 +17,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 import re
+from pycountry import languages
 
 from bot.config import (
     RATE_LIMIT_SECONDS, 
@@ -291,7 +292,7 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     text = message.text or message.caption or ""
     
     # Detect language
-    language, _ = langid.classify(text)
+    language = languages.get(alpha_2=langid.classify(text)[0]).name
     
     # Get the proper user display name
     if message.from_user:
@@ -383,11 +384,7 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         
         # Use the configured system prompt
         prompt = TLDR_SYSTEM_PROMPT.format(bot_name=TELEGRAPH_AUTHOR_NAME)
-        
-        # Detect language from the messages
-        all_text = " ".join([msg.text for msg in messages])
-        detected_language, _ = langid.classify(all_text)
-        
+                
         # Generate summary using Gemini
         response = await call_gemini(
             system_prompt=prompt,
@@ -469,6 +466,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     image_data_list: List[bytes] = []
     video_data: Optional[bytes] = None
     video_mime_type: Optional[str] = None
+    audio_data: Optional[bytes] = None
+    audio_mime_type: Optional[str] = None
     youtube_urls = None
     
     # Video processing (takes precedence)
@@ -518,7 +517,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         elif image_data_list:
             message_to_check = "Please analyze these images and verify any claims or content shown in them."
         
-    language, _ = langid.classify(message_to_check)
+    language = languages.get(alpha_2=langid.classify(message_to_check)[0]).name
     
     processing_message_text = "Fact-checking message..."
     if video_data:
@@ -602,12 +601,14 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         target_message_for_media = None
         media_group_id_to_log = None
         youtube_urls = None
+        language = None
 
         if update.effective_message.reply_to_message:
             target_message_for_media = update.effective_message.reply_to_message
             replied_text_content = target_message_for_media.text or target_message_for_media.caption or ""
             if replied_text_content:
                 if query: 
+                    language = languages.get(alpha_2=langid.classify(query)[0]).name # Response language should follow question
                     query = f"Context from replied message: \"{replied_text_content}\"\n\nQuestion: {query}"
                 else: 
                     query = replied_text_content
@@ -672,7 +673,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         
         processing_message = await update.effective_message.reply_text(processing_message_text)
         
-        language, _ = langid.classify(query)
+        if not language:
+            language = languages.get(alpha_2=langid.classify(query)[0]).name
         
         username = "Anonymous"
         if update.effective_sender: # Should be update.effective_message.from_user
@@ -694,7 +696,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
-        system_prompt = Q_SYSTEM_PROMPT.format(current_datetime=current_datetime)
+        system_prompt = Q_SYSTEM_PROMPT.format(current_datetime=current_datetime, language=language)
         use_pro_model = bool(video_data or image_data_list) # Use Pro model if media is present
         
         response = await call_gemini(
@@ -882,7 +884,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         # Moved common message logging outside the conditional block for cleaner structure
         # This part is common whether Vertex or Gemini was used (or attempted)
-        language, _ = langid.classify(message_text)
+        language = languages.get(alpha_2=langid.classify(message_text)[0]).name
         username = "Anonymous"
         if update.effective_sender: # Should be update.effective_message.from_user
             sender = update.effective_message.from_user
@@ -995,7 +997,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
     try:
-        language, _ = langid.classify(message_text)
+        language = languages.get(alpha_2=langid.classify(message_text)[0]).name
         
         username = "Anonymous"
         if update.effective_sender: # Should be update.effective_message.from_user
@@ -1196,7 +1198,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 await processing_message.edit_text(f"Sorry, Gemini couldn't {reply_text_part}. Please try again.")
         
         # Log the command usage
-        language, _ = langid.classify(formatted_history) # Use history for language context
+        language = languages.get(alpha_2=langid.classify(formatted_history)[0]).name # Use history for language context
         username = "Anonymous"
         if update.effective_message.from_user:
             sender = update.effective_message.from_user

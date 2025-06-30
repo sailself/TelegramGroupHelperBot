@@ -135,7 +135,7 @@ Guidelines for your responses:
 8. Format your response in an easily readable way using Markdown where appropriate.
 9. Keep your response under 400 words unless a detailed explanation is necessary.
 10. If the answer requires multiple parts, use numbered or bulleted lists.
-11. CRITICAL: If the question is in a language other than English, respond in the same language.
+11. CRITICAL: Respond in {language} language unless you are told otherwise.
 
 Remember to be helpful, accurate, and respectful in your responses.
 """
