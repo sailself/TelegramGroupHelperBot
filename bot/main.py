@@ -75,15 +75,7 @@ def main():
     loop.run_until_complete(init_db_wrapper())
     
     # Configure health check endpoint if using webhook
-    if USE_WEBHOOK:
-        from aiohttp import web
-        
-        async def healthz(_) -> web.Response:
-            """Health check endpoint."""
-            return web.Response(text="OK")
-        
-        application.web_app.router.add_get("/healthz", healthz)
-        
+    if USE_WEBHOOK:        
         # Start bot with webhook
         logger.info(f"Starting bot in production mode with webhook: {WEBHOOK_URL}")
         application.run_webhook(
