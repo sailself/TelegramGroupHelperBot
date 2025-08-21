@@ -9,12 +9,14 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
-async def upload_base64_image_to_cwd(base64_data: str, api_key: str) -> Optional[str]:
+async def upload_base64_image_to_cwd(base64_data: str, api_key: str, model: str = None, prompt: str = None) -> Optional[str]:
     """Upload a base64 encoded image to cwd.pw.
     
     Args:
         base64_data: Base64 encoded image data with data URI prefix (e.g., "data:image/png;base64,...")
         api_key: API key for cwd.pw service
+        model: The AI model used to generate the image
+        prompt: The prompt used to generate the image
         
     Returns:
         The URL of the uploaded image, or None if upload failed.
@@ -70,17 +72,56 @@ async def upload_base64_image_to_cwd(base64_data: str, api_key: str) -> Optional
             f'\r\n'
         ).encode('utf-8')
         
-        # API key part
-        api_key_part = (
-            f'\r\n--{boundary}\r\n'
+        # API key field
+        api_key_field = (
+            f'--{boundary}\r\n'
             f'Content-Disposition: form-data; name="api_key"\r\n'
             f'\r\n'
-            f'{api_key}\r\n'
-            f'--{boundary}--\r\n'
+            f'{api_key}'
         ).encode('utf-8')
         
+        # ai_generated field (always true)
+        ai_generated_field = (
+            f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="ai_generated"\r\n'
+            f'\r\n'
+            f'true'
+        ).encode('utf-8')
+        
+        # model field
+        model_field = (
+            f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="model"\r\n'
+            f'\r\n'
+            f'{model or ""}'
+        ).encode('utf-8')
+        
+        # prompt field
+        prompt_field = (
+            f'--{boundary}\r\n'
+            f'Content-Disposition: form-data; name="prompt"\r\n'
+            f'\r\n'
+            f'{prompt or ""}'
+        ).encode('utf-8')
+        
+        # Footer
+        footer = f'--{boundary}--\r\n'.encode('utf-8')
+        
         # Combine all parts
-        body_parts.extend([image_header, binary_data, api_key_part])
+        body_parts = [
+            image_header,
+            binary_data,
+            b'\r\n',
+            api_key_field,
+            b'\r\n',
+            ai_generated_field,
+            b'\r\n',
+            model_field,
+            b'\r\n',
+            prompt_field,
+            b'\r\n',
+            footer
+        ]
         body = b''.join(body_parts)
         
         # Set up headers
@@ -121,13 +162,15 @@ async def upload_base64_image_to_cwd(base64_data: str, api_key: str) -> Optional
         return None
 
 
-async def upload_image_bytes_to_cwd(image_bytes: bytes, api_key: str, mime_type: str = "image/jpeg") -> Optional[str]:
+async def upload_image_bytes_to_cwd(image_bytes: bytes, api_key: str, mime_type: str = "image/jpeg", model: str = None, prompt: str = None) -> Optional[str]:
     """Upload raw image bytes to cwd.pw.
     
     Args:
         image_bytes: Raw image data as bytes
         api_key: API key for cwd.pw service
         mime_type: MIME type of the image (default: image/jpeg)
+        model: The AI model used to generate the image
+        prompt: The prompt used to generate the image
         
     Returns:
         The URL of the uploaded image, or None if upload failed.
@@ -138,7 +181,7 @@ async def upload_image_bytes_to_cwd(image_bytes: bytes, api_key: str, mime_type:
         base64_data = f"data:{mime_type};base64,{base64_encoded}"
         
         # Use the base64 upload function
-        return await upload_base64_image_to_cwd(base64_data, api_key)
+        return await upload_base64_image_to_cwd(base64_data, api_key, model, prompt)
         
     except Exception as e:
         logger.error(f"Error converting image bytes to base64 for cwd.pw upload: {e}", exc_info=True)

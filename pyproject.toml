@@ -2,7 +2,7 @@
 name = "TelegramGroupHelperBot"
 version = "0.1.0"
 description = "Telegram bot with Gemini AI integration for summaries, fact checking, and Q&A"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["Kevin Z", "Frank L"]
 readme = "README.md"
 packages = [{include = "bot"}]
 

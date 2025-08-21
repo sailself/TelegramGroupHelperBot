@@ -223,3 +223,62 @@ The integration provides:
 3. **Flexibility**: Optional feature that can be enabled/disabled via configuration
 4. **Logging**: Comprehensive logging for debugging and monitoring
 5. **Security**: Proper error handling prevents information leakage
+
+# CWD.PW AI Metadata Enhancement
+
+## Core Changes
+
+### Enhanced Upload Metadata (bot/cwd_uploader.py)
+
+1. **AI Generation Metadata Support**:
+   - Added `model` and `prompt` parameters to upload functions
+   - Automatic inclusion of `ai_generated: true` metadata field
+   - Enhanced `upload_base64_image_to_cwd()` with metadata parameters
+   - Enhanced `upload_image_bytes_to_cwd()` with metadata parameters
+   - Proper multipart form data structure for metadata fields
+
+2. **Intelligent Model Detection**:
+   - Integrated with `generate_image_with_gemini()` to use `GEMINI_IMAGE_MODEL`
+   - Integrated with `generate_image_with_vertex()` to use `VERTEX_IMAGE_MODEL`
+   - Automatic prompt extraction from generation context
+   - Backwards compatible with existing API usage
+
+### Enhanced Image Generation Integration (bot/llm.py)
+
+1. **Metadata Propagation**:
+   - Modified Gemini image generation to pass model and prompt metadata
+   - Modified Vertex image generation to pass model and prompt metadata
+   - Uses configured model constants for accurate metadata
+   - Preserves original prompt information for metadata
+
+## Testing & Documentation
+
+1. **Expanded Test Coverage**:
+   - Added 4 new test cases for metadata functionality
+   - Tests for metadata field presence and accuracy
+   - Tests for empty/null metadata handling
+   - Tests for both Gemini and Vertex model metadata
+   - Updated existing tests to verify new parameters
+
+2. **Updated Documentation**:
+   - Enhanced README.md to mention AI metadata tracking
+   - Updated CHANGES.md with metadata enhancement details
+   - Documented new function signatures and parameters
+
+## Migration Requirements
+
+Users should:
+
+1. No breaking changes - existing functionality remains unchanged
+2. All new uploads automatically include AI generation metadata
+3. Model and prompt information now tracked for transparency
+4. No additional configuration required
+
+## Performance and Reliability
+
+The metadata enhancement provides:
+
+1. **Transparency**: Clear tracking of AI model and prompt used
+2. **Backwards Compatibility**: Existing API usage continues to work
+3. **Minimal Overhead**: Metadata adds minimal payload to uploads
+4. **Optional Parameters**: Metadata parameters are optional with sensible defaults

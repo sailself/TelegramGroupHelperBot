@@ -202,6 +202,111 @@ class TestCwdUploader(unittest.IsolatedAsyncioTestCase):
             
             self.assertIsNone(result)
 
+    async def test_upload_base64_image_with_model_and_prompt(self):
+        """Test upload with model and prompt metadata."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.json = AsyncMock(return_value=self.success_response)
+        
+        model = "dall-e-3"
+        prompt = "A beautiful sunset over mountains"
+        
+        with patch('aiohttp.ClientSession') as mock_session_class:
+            mock_session = MagicMock()
+            mock_session_class.return_value.__aenter__.return_value = mock_session
+            mock_session.post.return_value.__aenter__.return_value = mock_response
+            
+            result = await upload_base64_image_to_cwd(
+                self.test_base64_png, 
+                self.api_key, 
+                model=model, 
+                prompt=prompt
+            )
+            
+            self.assertEqual(result, "https://cwd.pw/i/test123.png")
+            mock_session.post.assert_called_once()
+            
+            # Check that the request body contains metadata fields
+            call_args = mock_session.post.call_args
+            request_data = call_args[1]['data']
+            request_data_str = request_data.decode('utf-8', errors='ignore')
+            
+            # Verify metadata fields are present
+            self.assertIn('name="ai_generated"', request_data_str)
+            self.assertIn('true', request_data_str)
+            self.assertIn('name="model"', request_data_str)
+            self.assertIn(model, request_data_str)
+            self.assertIn('name="prompt"', request_data_str)
+            self.assertIn(prompt, request_data_str)
+
+    async def test_upload_base64_image_with_empty_metadata(self):
+        """Test upload with None/empty model and prompt."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.json = AsyncMock(return_value=self.success_response)
+        
+        with patch('aiohttp.ClientSession') as mock_session_class:
+            mock_session = MagicMock()
+            mock_session_class.return_value.__aenter__.return_value = mock_session
+            mock_session.post.return_value.__aenter__.return_value = mock_response
+            
+            result = await upload_base64_image_to_cwd(
+                self.test_base64_png, 
+                self.api_key, 
+                model=None, 
+                prompt=""
+            )
+            
+            self.assertEqual(result, "https://cwd.pw/i/test123.png")
+            
+            # Check that the request body contains empty metadata fields
+            call_args = mock_session.post.call_args
+            request_data = call_args[1]['data']
+            request_data_str = request_data.decode('utf-8', errors='ignore')
+            
+            # Verify ai_generated is still present
+            self.assertIn('name="ai_generated"', request_data_str)
+            self.assertIn('true', request_data_str)
+            # Verify model and prompt fields are present but empty
+            self.assertIn('name="model"', request_data_str)
+            self.assertIn('name="prompt"', request_data_str)
+
+    async def test_upload_image_bytes_with_metadata(self):
+        """Test upload using bytes method with metadata."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.json = AsyncMock(return_value=self.success_response)
+        
+        model = "stable-diffusion"
+        prompt = "A cat sitting on a windowsill"
+        
+        with patch('aiohttp.ClientSession') as mock_session_class:
+            mock_session = MagicMock()
+            mock_session_class.return_value.__aenter__.return_value = mock_session
+            mock_session.post.return_value.__aenter__.return_value = mock_response
+            
+            result = await upload_image_bytes_to_cwd(
+                self.test_image_bytes, 
+                self.api_key, 
+                "image/png",
+                model=model,
+                prompt=prompt
+            )
+            
+            self.assertEqual(result, "https://cwd.pw/i/test123.png")
+            
+            # Check that metadata is passed through correctly
+            call_args = mock_session.post.call_args
+            request_data = call_args[1]['data']
+            request_data_str = request_data.decode('utf-8', errors='ignore')
+            
+            self.assertIn('name="ai_generated"', request_data_str)
+            self.assertIn('true', request_data_str)
+            self.assertIn('name="model"', request_data_str)
+            self.assertIn(model, request_data_str)
+            self.assertIn('name="prompt"', request_data_str)
+            self.assertIn(prompt, request_data_str)
+
     def test_multipart_form_data_structure(self):
         """Test that multipart form data is structured correctly."""
         # This is more of an integration test but helps verify the structure
@@ -214,11 +319,53 @@ class TestCwdUploader(unittest.IsolatedAsyncioTestCase):
             'Content-Disposition: form-data; name="api_key"'
         ]
         
+        expected_metadata_header_parts = [
+            'Content-Disposition: form-data; name="ai_generated"',
+            'Content-Disposition: form-data; name="model"',
+            'Content-Disposition: form-data; name="prompt"'
+        ]
+        
         # These are the key parts that should be in the multipart data
         # The actual test would need to mock the internal structure,
         # but this documents the expected format
         self.assertTrue(all(part in expected_image_header_parts for part in expected_image_header_parts))
         self.assertTrue(all(part in expected_api_key_header_parts for part in expected_api_key_header_parts))
+        self.assertTrue(all(part in expected_metadata_header_parts for part in expected_metadata_header_parts))
+
+    async def test_ai_generated_always_true(self):
+        """Test that ai_generated field is always set to true regardless of other parameters."""
+        mock_response = MagicMock()
+        mock_response.ok = True
+        mock_response.json = AsyncMock(return_value=self.success_response)
+        
+        test_cases = [
+            {"model": None, "prompt": None},
+            {"model": "test-model", "prompt": None},
+            {"model": None, "prompt": "test-prompt"},
+            {"model": "test-model", "prompt": "test-prompt"},
+        ]
+        
+        for case in test_cases:
+            with patch('aiohttp.ClientSession') as mock_session_class:
+                mock_session = MagicMock()
+                mock_session_class.return_value.__aenter__.return_value = mock_session
+                mock_session.post.return_value.__aenter__.return_value = mock_response
+                
+                await upload_base64_image_to_cwd(
+                    self.test_base64_png, 
+                    self.api_key, 
+                    **case
+                )
+                
+                # Check that ai_generated is always true
+                call_args = mock_session.post.call_args
+                request_data = call_args[1]['data']
+                request_data_str = request_data.decode('utf-8', errors='ignore')
+                
+                self.assertIn('name="ai_generated"', request_data_str)
+                self.assertIn('true', request_data_str)
+                # Ensure it's not false or any other value
+                self.assertNotIn('false', request_data_str.lower())
 
 
 if __name__ == '__main__':
