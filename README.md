@@ -7,7 +7,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Question Answering**: Ask questions with `/q <your question>` and receive factual, search-grounded answers
-- **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images).
+- **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting.
 - **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
 - **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
@@ -21,6 +21,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - A Telegram Bot Token from [BotFather](https://t.me/botfather)
 - Google Gemini API key from [Google AI Studio](https://aistudio.google.com/)
 - Optional: Telegraph API access token (for optimal Telegraph integration)
+- Optional: CWD.PW API key (for image hosting when using image generation features)
 
 ## Setup
 
@@ -44,7 +45,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 4. Copy the example environment file and edit it with your credentials:
    ```bash
    cp .env.example .env
-   # Edit .env with your Telegram Bot Token, Gemini API key, and Telegraph settings
+   # Edit .env with your Telegram Bot Token, Gemini API key, Telegraph settings, and CWD.PW API key
    ```
 
 5. Run the database migrations:
@@ -70,6 +71,9 @@ Configure the bot by editing the `.env` file:
 - `TELEGRAPH_ACCESS_TOKEN`: Your Telegraph API access token
 - `TELEGRAPH_AUTHOR_NAME`: Name to display as author on Telegraph pages
 - `TELEGRAPH_AUTHOR_URL`: URL for the author name
+
+### Image hosting settings:
+- `CWD_PW_API_KEY`: Your CWD.PW API key for image hosting (optional, required for external image hosting)
 
 ### Optional settings:
 - `DATABASE_URL`: Database connection URL (default: SQLite)
@@ -125,7 +129,7 @@ The bot can be deployed in various ways:
 
 4. Set secrets:
    ```bash
-   fly secrets set BOT_TOKEN=your_bot_token GEMINI_API_KEY=your_gemini_key
+   fly secrets set BOT_TOKEN=your_bot_token GEMINI_API_KEY=your_gemini_key CWD_PW_API_KEY=your_cwd_pw_key
    ```
 
 5. Deploy:
@@ -165,6 +169,27 @@ The bot leverages Gemini's advanced image understanding capabilities to:
 - Process multiple image formats (JPEG, PNG, WEBP, HEIC, HEIF)
 
 Simply reply to an image with `/q What's in this picture?` or `/factcheck` to analyze visual content.
+
+## Image Hosting Integration
+
+The bot includes automatic image hosting through CWD.PW for generated images:
+
+### Features:
+- **Automatic Upload**: All generated images are automatically uploaded to CWD.PW for external hosting
+- **Multiple Formats**: Supports PNG, JPEG, and WebP image formats
+- **Error Handling**: Upload failures don't affect image generation functionality
+- **Logging**: Upload status and URLs are logged for debugging
+
+### Configuration:
+To enable image hosting, set your CWD.PW API key in the `.env` file:
+```
+CWD_PW_API_KEY=your_cwd_pw_api_key_here
+```
+
+### Behavior:
+- When `CWD_PW_API_KEY` is configured: Generated images are uploaded to CWD.PW and URLs are logged
+- When `CWD_PW_API_KEY` is not configured: Images are generated normally but not uploaded
+- Upload failures are logged but don't prevent image generation or delivery to users
 
 ## Database Management
 

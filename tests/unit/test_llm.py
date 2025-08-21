@@ -12,7 +12,7 @@ from google.genai import types as genai_types # Changed to google.genai
 # Assuming llm.py is in bot.llm
 from bot.llm import (
     generate_video_with_veo, GEMINI_VIDEO_MODEL, _safety_settings, GEMINI_API_KEY,
-    generate_image_with_vertex # Added for the new tests
+    generate_image_with_vertex, generate_image_with_gemini # Added for the new tests
 )
 # Constants like VERTEX_IMAGE_MODEL, VERTEX_PROJECT_ID, VERTEX_LOCATION are imported by llm.py itself
 # and will be patched in the tests for generate_image_with_vertex.
@@ -484,8 +484,278 @@ class TestGenerateImageWithVertex(unittest.IsolatedAsyncioTestCase):
         temporary_model_patch.stop()
         self.active_image_model_patch.start() 
 
+
+# Tests for generate_image_with_gemini and CWD upload integration
+@patch('bot.llm.get_gemini_client')
+@patch('bot.llm.Image')
+@patch('bot.llm.BytesIO')
+class TestGenerateImageWithGemini(unittest.IsolatedAsyncioTestCase):
+    """Test cases for Gemini image generation and CWD upload integration."""
+
+    def setUp(self):
+        self.mock_gemini_image_model = patch('bot.llm.GEMINI_IMAGE_MODEL', 'test-gemini-image-model')
+        self.active_model_patch = self.mock_gemini_image_model.start()
+        self.addCleanup(self.mock_gemini_image_model.stop)
+
+    async def test_generate_image_success_without_upload(self, MockBytesIO, MockPILImage, MockGetGeminiClient):
+        """Test successful image generation without CWD upload."""
+        mock_client = MockGetGeminiClient.return_value
+        
+        # Mock response with image data
+        mock_inline_data = MagicMock()
+        mock_inline_data.data = b"mock_image_data"
+        mock_inline_data.mime_type = "image/png"
+        
+        mock_part = MagicMock()
+        mock_part.inline_data = mock_inline_data
+        
+        mock_content = MagicMock()
+        mock_content.parts = [mock_part]
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content = mock_content
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_client.aio.models.generate_content.return_value = mock_response
+        
+        # Mock PIL processing
+        mock_pil_img = MockPILImage.open.return_value
+        mock_pil_img.mode = 'RGB'
+        
+        mock_bytes_io = MockBytesIO.return_value
+        mock_bytes_io.getvalue.return_value = b"processed_jpeg_bytes"
+        
+        result = await generate_image_with_gemini(
+            system_prompt="Test prompt",
+            prompt="A test image",
+            upload_to_cwd=False
+        )
+        
+        self.assertEqual(result, b"processed_jpeg_bytes")
+        mock_client.aio.models.generate_content.assert_called_once()
+
+    @patch('bot.llm.CWD_PW_API_KEY', 'test_api_key')
+    @patch('bot.cwd_uploader.upload_image_bytes_to_cwd')
+    async def test_generate_image_success_with_upload(self, MockUploadToCwd, MockBytesIO, MockPILImage, MockGetGeminiClient):
+        """Test successful image generation with CWD upload."""
+        mock_client = MockGetGeminiClient.return_value
+        
+        # Mock response with image data
+        mock_inline_data = MagicMock()
+        mock_inline_data.data = b"mock_image_data"
+        mock_inline_data.mime_type = "image/png"
+        
+        mock_part = MagicMock()
+        mock_part.inline_data = mock_inline_data
+        
+        mock_content = MagicMock()
+        mock_content.parts = [mock_part]
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content = mock_content
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_client.aio.models.generate_content.return_value = mock_response
+        
+        # Mock PIL processing
+        mock_pil_img = MockPILImage.open.return_value
+        mock_pil_img.mode = 'RGB'
+        
+        mock_bytes_io = MockBytesIO.return_value
+        mock_bytes_io.getvalue.return_value = b"processed_jpeg_bytes"
+        
+        # Mock successful upload
+        MockUploadToCwd.return_value = "https://cwd.pw/i/test123.jpg"
+        
+        result = await generate_image_with_gemini(
+            system_prompt="Test prompt",
+            prompt="A test image",
+            upload_to_cwd=True
+        )
+        
+        self.assertEqual(result, b"processed_jpeg_bytes")
+        MockUploadToCwd.assert_called_once_with(
+            image_bytes=b"processed_jpeg_bytes",
+            api_key='test_api_key',
+            mime_type="image/jpeg"
+        )
+
+    @patch('bot.llm.CWD_PW_API_KEY', '')
+    async def test_generate_image_no_upload_when_no_api_key(self, MockBytesIO, MockPILImage, MockGetGeminiClient):
+        """Test that upload is skipped when no API key is configured."""
+        mock_client = MockGetGeminiClient.return_value
+        
+        # Mock response with image data
+        mock_inline_data = MagicMock()
+        mock_inline_data.data = b"mock_image_data"
+        mock_inline_data.mime_type = "image/png"
+        
+        mock_part = MagicMock()
+        mock_part.inline_data = mock_inline_data
+        
+        mock_content = MagicMock()
+        mock_content.parts = [mock_part]
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content = mock_content
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_client.aio.models.generate_content.return_value = mock_response
+        
+        # Mock PIL processing
+        mock_pil_img = MockPILImage.open.return_value
+        mock_pil_img.mode = 'RGB'
+        
+        mock_bytes_io = MockBytesIO.return_value
+        mock_bytes_io.getvalue.return_value = b"processed_jpeg_bytes"
+        
+        with patch('bot.cwd_uploader.upload_image_bytes_to_cwd') as MockUpload:
+            result = await generate_image_with_gemini(
+                system_prompt="Test prompt",
+                prompt="A test image",
+                upload_to_cwd=True
+            )
+            
+            self.assertEqual(result, b"processed_jpeg_bytes")
+            MockUpload.assert_not_called()
+
+    @patch('bot.llm.CWD_PW_API_KEY', 'test_api_key')
+    @patch('bot.cwd_uploader.upload_image_bytes_to_cwd')
+    async def test_generate_image_upload_failure_does_not_affect_result(self, MockUploadToCwd, MockBytesIO, MockPILImage, MockGetGeminiClient):
+        """Test that upload failure doesn't affect image generation result."""
+        mock_client = MockGetGeminiClient.return_value
+        
+        # Mock response with image data
+        mock_inline_data = MagicMock()
+        mock_inline_data.data = b"mock_image_data"
+        mock_inline_data.mime_type = "image/png"
+        
+        mock_part = MagicMock()
+        mock_part.inline_data = mock_inline_data
+        
+        mock_content = MagicMock()
+        mock_content.parts = [mock_part]
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content = mock_content
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_client.aio.models.generate_content.return_value = mock_response
+        
+        # Mock PIL processing
+        mock_pil_img = MockPILImage.open.return_value
+        mock_pil_img.mode = 'RGB'
+        
+        mock_bytes_io = MockBytesIO.return_value
+        mock_bytes_io.getvalue.return_value = b"processed_jpeg_bytes"
+        
+        # Mock upload failure
+        MockUploadToCwd.side_effect = Exception("Upload failed")
+        
+        result = await generate_image_with_gemini(
+            system_prompt="Test prompt",
+            prompt="A test image",
+            upload_to_cwd=True
+        )
+        
+        # Image generation should still succeed despite upload failure
+        self.assertEqual(result, b"processed_jpeg_bytes")
+        MockUploadToCwd.assert_called_once()
+
+    async def test_generate_image_no_image_data_in_response(self, MockBytesIO, MockPILImage, MockGetGeminiClient):
+        """Test handling when no image data is found in response."""
+        mock_client = MockGetGeminiClient.return_value
+        
+        # Mock response without image data
+        mock_part = MagicMock()
+        mock_part.text = "No image generated"
+        # No inline_data attribute
+        
+        mock_content = MagicMock()
+        mock_content.parts = [mock_part]
+        
+        mock_candidate = MagicMock()
+        mock_candidate.content = mock_content
+        
+        mock_response = MagicMock()
+        mock_response.candidates = [mock_candidate]
+        
+        mock_client.aio.models.generate_content.return_value = mock_response
+        
+        result = await generate_image_with_gemini(
+            system_prompt="Test prompt",
+            prompt="A test image"
+        )
+        
+        self.assertIsNone(result)
+        MockPILImage.open.assert_not_called()
+
+
+# Tests for Vertex image generation with CWD upload
+@patch('bot.llm.get_vertex_client')
+@patch('bot.llm.Image')
+@patch('bot.llm.BytesIO')
+class TestVertexImageWithCwdUpload(unittest.IsolatedAsyncioTestCase):
+    """Test CWD upload integration with Vertex image generation."""
+
+    def setUp(self):
+        self.mock_vertex_image_model = patch('bot.llm.VERTEX_IMAGE_MODEL', 'test-imagen-model@005')
+        self.active_model_patch = self.mock_vertex_image_model.start()
+        self.addCleanup(self.mock_vertex_image_model.stop)
+
+    @patch('bot.llm.CWD_PW_API_KEY', 'test_api_key')
+    @patch('bot.cwd_uploader.upload_image_bytes_to_cwd')
+    async def test_vertex_image_generation_with_upload(self, MockUploadToCwd, MockBytesIO, MockPILImage, MockGetVertexClient):
+        """Test Vertex image generation with successful CWD upload."""
+        mock_vertex_client = MockGetVertexClient.return_value
+        
+        # Mock successful image generation
+        mock_image = MagicMock()
+        mock_image.image_bytes = b"vertex_image_data"
+        mock_image.mime_type = "image/png"
+        
+        mock_generated_image = MagicMock()
+        mock_generated_image.image = mock_image
+        mock_generated_image.enhanced_prompt = None
+        
+        mock_response = MagicMock()
+        mock_response.generated_images = [mock_generated_image]
+        
+        mock_vertex_client.aio.models.generate_images.return_value = mock_response
+        
+        # Mock PIL processing
+        mock_pil_img = MockPILImage.open.return_value
+        mock_pil_img.mode = 'RGB'
+        
+        mock_bytes_io = MockBytesIO.return_value
+        mock_bytes_io.getvalue.return_value = b"processed_jpeg_bytes"
+        
+        # Mock successful upload
+        MockUploadToCwd.return_value = "https://cwd.pw/i/vertex123.jpg"
+        
+        result = await generate_image_with_vertex(
+            prompt="A test image",
+            number_of_images=1,
+            upload_to_cwd=True
+        )
+        
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0], b"processed_jpeg_bytes")
+        MockUploadToCwd.assert_called_once_with(
+            image_bytes=b"processed_jpeg_bytes",
+            api_key='test_api_key',
+            mime_type="image/jpeg"
+        )
+
+
 # This allows running the test file directly.
 if __name__ == '__main__':
     unittest.main()
-
-[end of tests/unit/test_llm.py]
