@@ -27,6 +27,7 @@ from bot.config import (
     VERTEX_VIDEO_MODEL,
     USE_VERTEX_IMAGE,
     VERTEX_IMAGE_MODEL,
+    CWD_PW_API_KEY,
 )
 import time # Added for polling
 
@@ -831,6 +832,7 @@ async def generate_image_with_gemini(
     system_prompt: str,
     prompt: str,
     input_image_url: Optional[str] = None,
+    upload_to_cwd: bool = True,
 ) -> Optional[bytes]:
     """Generate or edit an image using Gemini.
     
@@ -931,8 +933,27 @@ async def generate_image_with_gemini(
                         await asyncio.to_thread(img.save, output, format='JPEG', quality=95)
                         output.seek(0)
                         
+                        # Get the JPEG bytes
+                        image_bytes = output.getvalue()
+                        
+                        # Upload to cwd.pw if enabled and API key is available
+                        if upload_to_cwd and CWD_PW_API_KEY:
+                            try:
+                                from bot.cwd_uploader import upload_image_bytes_to_cwd
+                                cwd_url = await upload_image_bytes_to_cwd(
+                                    image_bytes=image_bytes,
+                                    api_key=CWD_PW_API_KEY,
+                                    mime_type="image/jpeg"
+                                )
+                                if cwd_url:
+                                    logger.info(f"Image uploaded to cwd.pw: {cwd_url}")
+                                else:
+                                    logger.warning("Failed to upload image to cwd.pw")
+                            except Exception as upload_error:
+                                logger.error(f"Error uploading to cwd.pw: {upload_error}", exc_info=True)
+                        
                         # Return the JPEG bytes
-                        return output.getvalue()
+                        return image_bytes
                     except Exception as img_error:
                         logger.error(f"Error processing inline image data: {img_error}", exc_info=True)
                 
@@ -1073,6 +1094,7 @@ async def generate_video_with_veo(
 async def generate_image_with_vertex(
     prompt: str,
     number_of_images: int = 4,
+    upload_to_cwd: bool = True,
 ) -> List[bytes]:
     """Generate images using Vertex AI.
 
@@ -1132,7 +1154,25 @@ async def generate_image_with_vertex(
                             
                             output_buffer = BytesIO()
                             await asyncio.to_thread(img.save, output_buffer, format='JPEG', quality=95)
-                            generated_images_bytes.append(output_buffer.getvalue())
+                            image_bytes = output_buffer.getvalue()
+                            
+                            # Upload to cwd.pw if enabled and API key is available
+                            if upload_to_cwd and CWD_PW_API_KEY:
+                                try:
+                                    from bot.cwd_uploader import upload_image_bytes_to_cwd
+                                    cwd_url = await upload_image_bytes_to_cwd(
+                                        image_bytes=image_bytes,
+                                        api_key=CWD_PW_API_KEY,
+                                        mime_type="image/jpeg"
+                                    )
+                                    if cwd_url:
+                                        logger.info(f"Vertex image uploaded to cwd.pw: {cwd_url}")
+                                    else:
+                                        logger.warning("Failed to upload Vertex image to cwd.pw")
+                                except Exception as upload_error:
+                                    logger.error(f"Error uploading Vertex image to cwd.pw: {upload_error}", exc_info=True)
+                            
+                            generated_images_bytes.append(image_bytes)
                             logger.info("Successfully processed one image from Vertex AI (genai.Client) response.")
                             if len(generated_images_bytes) >= number_of_images: # Stop if we have enough
                                 break 
