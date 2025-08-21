@@ -1,0 +1,29 @@
+# Authors
+
+This project has been developed by the following contributors:
+
+## Core Contributors
+
+- **Kevin Z** - Original project creator and main developer
+- **Frank L** - CWD.PW image hosting integration and AI metadata enhancement
+
+## Contributions
+
+### Kevin Z
+- Initial project architecture and implementation
+- Telegram bot integration and handlers
+- Google Gemini AI integration
+- Database models and operations
+- Telegraph integration
+- Google Search grounding implementation
+
+### Frank L
+- CWD.PW image hosting integration
+- AI generation metadata enhancement (model and prompt tracking)
+- Image upload functionality for generated images
+- Test coverage for upload functionality
+- Documentation updates for new features
+
+---
+
+We welcome contributions from the community! Please see the README.md for information on how to contribute to this project.

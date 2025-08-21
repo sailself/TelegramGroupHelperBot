@@ -7,7 +7,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Question Answering**: Ask questions with `/q <your question>` and receive factual, search-grounded answers
-- **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting.
+- **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
 - **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
 - **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
@@ -214,6 +214,13 @@ pytest tests/unit/
 # Run integration tests only
 pytest tests/integration/
 ```
+
+## Authors
+
+- **Kevin Z** - Original project creator and main developer
+- **Frank L** - CWD.PW image hosting integration and AI metadata enhancement
+
+See [AUTHORS](AUTHORS) for detailed contribution information.
 
 ## Contributing
 

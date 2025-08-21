@@ -943,7 +943,9 @@ async def generate_image_with_gemini(
                                 cwd_url = await upload_image_bytes_to_cwd(
                                     image_bytes=image_bytes,
                                     api_key=CWD_PW_API_KEY,
-                                    mime_type="image/jpeg"
+                                    mime_type="image/jpeg",
+                                    model=GEMINI_IMAGE_MODEL,
+                                    prompt=image_generation_prompt
                                 )
                                 if cwd_url:
                                     logger.info(f"Image uploaded to cwd.pw: {cwd_url}")
@@ -1163,7 +1165,9 @@ async def generate_image_with_vertex(
                                     cwd_url = await upload_image_bytes_to_cwd(
                                         image_bytes=image_bytes,
                                         api_key=CWD_PW_API_KEY,
-                                        mime_type="image/jpeg"
+                                        mime_type="image/jpeg",
+                                        model=VERTEX_IMAGE_MODEL,
+                                        prompt=prompt
                                     )
                                     if cwd_url:
                                         logger.info(f"Vertex image uploaded to cwd.pw: {cwd_url}")

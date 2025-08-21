@@ -581,7 +581,9 @@ class TestGenerateImageWithGemini(unittest.IsolatedAsyncioTestCase):
         MockUploadToCwd.assert_called_once_with(
             image_bytes=b"processed_jpeg_bytes",
             api_key='test_api_key',
-            mime_type="image/jpeg"
+            mime_type="image/jpeg",
+            model='test-gemini-image-model',
+            prompt="A test image"
         )
 
     @patch('bot.llm.CWD_PW_API_KEY', '')
@@ -752,7 +754,9 @@ class TestVertexImageWithCwdUpload(unittest.IsolatedAsyncioTestCase):
         MockUploadToCwd.assert_called_once_with(
             image_bytes=b"processed_jpeg_bytes",
             api_key='test_api_key',
-            mime_type="image/jpeg"
+            mime_type="image/jpeg",
+            model='test-imagen-model@005',
+            prompt="A test image"
         )
 
 
