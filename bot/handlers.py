@@ -42,10 +42,11 @@ from bot.db.database import ( # Reformatted for clarity
 )
 from bot.llm import (
     call_gemini,
-    generate_image_with_gemini, 
+    generate_image_with_gemini,
     generate_image_with_vertex,
-    download_media, 
-    generate_video_with_veo
+    download_media,
+    generate_video_with_veo,
+    ImageGenerationError,
 )
 from io import BytesIO
 
@@ -776,6 +777,17 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         except Exception: # Inner exception during error reporting
             pass
 
+async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle messages that are part of a media group."""
+    message = update.effective_message
+    if message.media_group_id:
+        if message.media_group_id not in context.bot_data:
+            context.bot_data[message.media_group_id] = [message]
+        else:
+            # To avoid duplicates if the handler is called for the same message multiple times
+            if message not in context.bot_data[message.media_group_id]:
+                context.bot_data[message.media_group_id].append(message)
+
 async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handler for the /img command.
     
@@ -799,27 +811,50 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Get message text without the command
-    message_text = update.effective_message.text or ""
+    message_text = update.effective_message.text or update.effective_message.caption or ""
     if message_text.startswith("/img"):
         prompt = message_text[4:].strip()
     else:
         prompt = ""
 
-    # Get potential image from a replied message
-    replied_message = update.effective_message.reply_to_message
-    image_url = None
+    image_urls = []
     
-    if replied_message:
+    # Check for media group
+    if update.effective_message.media_group_id:
+        # This part is tricky as we need to gather all messages from the media group.
+        # We'll rely on a caching mechanism that should be implemented in the main bot logic.
+        # For now, we'll assume a helper function get_media_group_messages exists.
+        # This is a placeholder for a more robust implementation.
+        logger.info(f"Handling media group with ID: {update.effective_message.media_group_id}")
+        # A simple sleep might work for small groups if messages arrive close together.
+        await asyncio.sleep(1)
+        media_messages = context.bot_data.get(update.effective_message.media_group_id, [])
+        # The current message might not be in bot_data yet, so we add it.
+        if update.effective_message not in media_messages:
+            media_messages.append(update.effective_message)
+
+        for msg in media_messages:
+            if msg.photo:
+                photo = msg.photo[-1]
+                photo_file = await context.bot.get_file(photo.file_id)
+                image_urls.append(photo_file.file_path)
+    elif update.effective_message.photo:
+        photo = update.effective_message.photo[-1]
+        photo_file = await context.bot.get_file(photo.file_id)
+        image_urls.append(photo_file.file_path)
+
+    # Get potential image from a replied message if no image in the command message
+    if not image_urls and update.effective_message.reply_to_message:
+        replied_message = update.effective_message.reply_to_message
         if replied_message.photo:
-            # Get the largest photo (last in the array)
             photo = replied_message.photo[-1]
             photo_file = await context.bot.get_file(photo.file_id)
-            image_url = photo_file.file_path
+            image_urls.append(photo_file.file_path)
         
         replied_text_content = replied_message.text or replied_message.caption or ""
         if replied_text_content:
             if prompt: 
-                if not image_url:
+                if not image_urls:
                     prompt = f"{replied_text_content}\n\n{prompt}"
             else: 
                 prompt = replied_text_content
@@ -831,65 +866,26 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-
     # Send a processing message
     processing_message = await update.effective_message.reply_text(
         "Processing your image request... This may take a moment."
     )
     
     try:
-        if USE_VERTEX_IMAGE and not image_url:
-            logger.info(f"img_handler operating in Vertex AI mode for prompt: '{prompt}'")
-            # For Vertex, we are not currently supporting editing an existing image URL.
-            # The generate_image_with_vertex function currently only takes a prompt.
-            if image_url:
-                logger.warning("Vertex AI image generation called with an input image URL, but it's not currently supported by generate_image_with_vertex. Proceeding with prompt only.")
-                # Optionally, notify user:
-                # await processing_message.edit_text("Image editing is not currently supported with Vertex AI. Generating a new image from your prompt.")
-            
-            images_data_list = await generate_image_with_vertex(prompt=prompt)
+        # For now, we will use Gemini for all image generation as Vertex is not set up for multi-image input
+        logger.info(f"img_handler operating in Gemini mode for prompt: '{prompt}'")
+        system_prompt = "Generate an image based on the description."
 
-            if images_data_list:
-                if len(images_data_list) > 1:
-                    logger.info(f"Vertex AI generated {len(images_data_list)} images. Sending as media group.")
-                    media_group = []
-                    for i, img_data in enumerate(images_data_list):
-                        img_io = BytesIO(img_data)
-                        img_io.name = f'vertex_image_{i}.jpg'
-                        caption_text = f"Images generated with {VERTEX_IMAGE_MODEL}, hope you like them!" if i == 0 else None
-                        media_group.append(InputMediaPhoto(media=img_io, caption=caption_text))
-                    
-                    # await processing_message.context.bot.send_media_group(chat_id=update.effective_chat.id, media=media_group)
-                    await processing_message.delete()
-                    await update.effective_message.reply_media_group(media=media_group)
-                    logger.info("Media group sent and processing message deleted.")
-                elif len(images_data_list) == 1:
-                    logger.info("Vertex AI generated 1 image. Sending as single photo.")
-                    image_data = images_data_list[0]
-                    image_io = BytesIO(image_data)
-                    image_io.name = 'vertex_image.jpg'
-                    await processing_message.edit_media(media=InputMediaPhoto(media=image_io, caption=f"Image generated with {VERTEX_IMAGE_MODEL}, hope you like it."))
-                    logger.info("Single image sent by editing processing message.")
-                # else case (empty list) is handled by the next 'else'
-            else:
-                logger.error("Vertex AI image generation failed or returned empty list.")
-                await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't generate required images. Please change your prompt and try again.")
+        if image_urls:
+            logger.info(f"Gemini: Processing image edit request with {len(image_urls)} image(s): '{prompt}'")
+        else:
+            logger.info(f"Gemini: Processing image generation request: '{prompt}'")
 
-        else: # Fallback to Gemini
-            logger.info(f"img_handler operating in Gemini mode for prompt: '{prompt}'")
-            # Keep system prompt simple
-            system_prompt = "Generate an image based on the description."
-            
-            # Log if this is a generation or editing request
-            if image_url:
-                logger.info(f"Gemini: Processing image edit request: '{prompt}'")
-            else:
-                logger.info(f"Gemini: Processing image generation request: '{prompt}'")
-
+        try:
             image_data = await generate_image_with_gemini(
                 system_prompt=system_prompt,
                 prompt=prompt,
-                input_image_url=image_url
+                input_image_urls=image_urls
             )
 
             if image_data:
@@ -901,28 +897,9 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                     logger.info("Gemini: Image sent successfully by editing processing message.")
                 except Exception as send_error:
                     logger.error(f"Gemini: Error sending image via Telegram: {send_error}", exc_info=True)
-                    # Fallback saving to disk logic (can be kept or removed if not essential for Vertex path)
-                    try:
-                        import os
-                        from datetime import datetime
-                        os.makedirs("logs/images", exist_ok=True)
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        file_path = f"logs/images/gemini_image_{timestamp}.jpg"
-                        with open(file_path, "wb") as f:
-                            f.write(image_data)
-                        logger.info(f"Gemini: Saved problematic image to {file_path}")
-                        await processing_message.edit_text(
-                            "I generated an image with Gemini but couldn't send it. Saved for debugging."
-                        )
-                    except Exception as save_error:
-                        logger.error(f"Gemini: Error saving image to disk: {save_error}", exc_info=True)
-                        await processing_message.edit_text(
-                            "Sorry, I generated an image with Gemini but couldn't send it. Format might be incompatible."
-                        )
             else:
                 logger.warning("Gemini: Image generation failed (image_data is None).")
-                # Different messages for generation vs editing
-                if image_url:
+                if image_urls:
                     await processing_message.edit_text(
                         "I couldn't edit the image with Gemini. Please try:\n"
                         "1. Simpler edit description\n2. More specific details\n3. Different edit type or try later"
@@ -932,12 +909,13 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         "I couldn't generate an image with Gemini. Please try:\n"
                         "1. Simpler prompt\n2. More specific details\n3. Try again later"
                     )
+        except ImageGenerationError as e:
+            logger.error(f"ImageGenerationError in img_handler: {e}")
+            await processing_message.edit_text(f"Image generation failed: {e}")
 
-        # Moved common message logging outside the conditional block for cleaner structure
-        # This part is common whether Vertex or Gemini was used (or attempted)
         language = languages.get(alpha_2=langid.classify(message_text)[0]).name
         username = "Anonymous"
-        if update.effective_sender: # Should be update.effective_message.from_user
+        if update.effective_sender:
             sender = update.effective_message.from_user
             if sender.full_name: username = sender.full_name
             elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
@@ -945,7 +923,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             elif sender.username: username = sender.username
 
         await queue_message_insert(
-            user_id=update.effective_message.from_user.id, # Use from_user here
+            user_id=update.effective_message.from_user.id,
             username=username,
             text=message_text, 
             language=language,
@@ -956,24 +934,12 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
     except Exception as e:
-        # General error logging for the handler
         logger.error(f"Error in img_handler: {e}", exc_info=True)
         error_message_for_user = "Sorry, an unexpected error occurred while processing your image request."
-        
-        # More specific error messages based on context (e.g., if it's a known API issue)
-        # This part can be refined if common errors from Vertex/Gemini need special user messages.
-        # For example, if 'e' contains specific error codes or messages.
-        # if "quota" in str(e).lower():
-        #    error_message_for_user = "Image generation quota exceeded. Please try again later."
-        # elif "unsafe" in str(e).lower(): # Example for content safety issues
-        #    error_message_for_user = "The generated image might be unsafe. Please try a different prompt."
-            
         try:
             await processing_message.edit_text(error_message_for_user)
-        except Exception as edit_err: # Fallback if editing the message fails
+        except Exception as edit_err:
             logger.error(f"Failed to edit processing message with error: {edit_err}", exc_info=True)
-            # As a last resort, try sending a new message if the original processing_message is gone or uneditable
-            # await update.effective_message.reply_text(error_message_for_user)
 
 
 async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

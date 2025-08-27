@@ -828,10 +828,14 @@ async def test_gemini_vision(image_url: str) -> None:
         return f"Error: {str(e)}"
 
 
+class ImageGenerationError(Exception):
+    """Custom exception for image generation errors."""
+    pass
+
 async def generate_image_with_gemini(
     system_prompt: str,
     prompt: str,
-    input_image_url: Optional[str] = None,
+    input_image_urls: Optional[List[str]] = None,
     upload_to_cwd: bool = True,
 ) -> Optional[bytes]:
     """Generate or edit an image using Gemini.
@@ -839,7 +843,7 @@ async def generate_image_with_gemini(
     Args:
         system_prompt: The system prompt for the model.
         prompt: The user's description of the desired image.
-        input_image_url: Optional URL to an image to edit.
+        input_image_urls: Optional list of URLs to images to edit (up to 2).
         
     Returns:
         The generated image as bytes, or None if generation failed.
@@ -847,54 +851,59 @@ async def generate_image_with_gemini(
     logger.info(f"Generating image with prompt: {prompt[:100]}...")
     
     try:
-        # Keep the prompt simple as suggested
         image_generation_prompt = prompt
         
-        # If there's an input image, include it in the request
-        if input_image_url:
-            logger.info(f"Editing existing image from URL: {input_image_url}")
-            image_data = await download_media(input_image_url) # Changed to download_media
-            
-            if not image_data: 
-                logger.error("Failed to download input media for image generation/edit, proceeding with text-only generation if applicable")
-                input_image_url = None # Ensure no further attempt to use it
-            else:
-                # Configure generation parameters
-                model = GEMINI_IMAGE_MODEL # This is specific to image generation
+        # If there are input images, include them in the request
+        if input_image_urls:
+            if len(input_image_urls) > 2:
+                logger.warning(f"Too many images provided ({len(input_image_urls)}), only the first 2 will be used.")
+                input_image_urls = input_image_urls[:2]
+
+            image_data_list = []
+            for url in input_image_urls:
+                logger.info(f"Downloading image from URL: {url}")
+                image_data = await download_media(url)
+                if image_data:
+                    image_data_list.append(image_data)
+                else:
+                    logger.error(f"Failed to download image from {url}")
+
+            if image_data_list:
+                model = "models/gemini-2.5-flash-image-preview" # As requested
                 config = types.GenerateContentConfig(
                     response_modalities=['TEXT', 'IMAGE'],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings
                 )
                 
-                # Determine MIME type from the image data
-                mime_type = detect_mime_type(image_data)
+                contents = [f"Edit this image: {prompt}"]
+                for image_data in image_data_list:
+                    mime_type = detect_mime_type(image_data)
+                    contents.append(types.Part.from_bytes(data=image_data, mime_type=mime_type))
                 
-                # Create multipart model request with image and prompt
-                contents = [
-                    f"Edit this image: {prompt}",
-                    types.Part.from_bytes(data=image_data, mime_type=mime_type)
-                ]
-                
-                # Make the API call with both text and image
                 response = await get_gemini_client().aio.models.generate_content(
                     model=model,
                     contents=contents,
                     config=config
                 )
-        else:
+            else:
+                # All image downloads failed, proceed with text-only
+                input_image_urls = None
+                logger.error("All image downloads failed, proceeding with text-only generation.")
+
+        if not input_image_urls:
             # Text-only image generation
-            model = GEMINI_IMAGE_MODEL  # Use the specialized image model
+            model = "models/gemini-2.5-flash-image-preview" # As requested
+            # Prepend a specific instruction to the prompt for text-only image generation
+            image_generation_prompt = f"Generate an image of {prompt}"
             config = types.GenerateContentConfig(
                 response_modalities=['TEXT', 'IMAGE'],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings
             )
             
-            # Log the model being used
-            logger.info(f"Using model {model} for image generation")
+            logger.info(f"Using model {model} for text-only image generation with prompt: {image_generation_prompt}")
             
-            # Make the API call
             response = await get_gemini_client().aio.models.generate_content(
                 model=model,
                 contents=image_generation_prompt,
@@ -904,6 +913,8 @@ async def generate_image_with_gemini(
         # Extract the image data from the response parts
         logger.info(f"Response received. Candidates count: {len(response.candidates)}")
         
+        image_found = False
+        text_response_parts = []
         for candidate in response.candidates:
             if not hasattr(candidate, 'content') or not hasattr(candidate.content, 'parts'):
                 continue
@@ -911,6 +922,7 @@ async def generate_image_with_gemini(
             for part in candidate.content.parts:
                 # Check if the part has inline_data (image data)
                 if hasattr(part, 'inline_data') and part.inline_data is not None:
+                    image_found = True
                     logger.info(f"Found inline image data with mime type: {part.inline_data.mime_type}")
                     
                     # Convert the image data to bytes
@@ -961,8 +973,13 @@ async def generate_image_with_gemini(
                 
                 # Check if part has text (might contain error messages)
                 if hasattr(part, 'text') and part.text:
-                    logger.info(f"Part has text: {part.text[:100]}")
+                    text_response_parts.append(part.text)
         
+        if not image_found:
+            full_text_response = " ".join(text_response_parts)
+            logger.error(f"No valid image data found in response. Full text response: {full_text_response}")
+            raise ImageGenerationError(f"Model returned a text response instead of an image: {full_text_response}")
+
         logger.error("No valid image data found in response")
         return None
             
@@ -1000,6 +1017,16 @@ async def generate_video_with_veo(
 
     if image_data:
         logger.info(f"Image data provided: {len(image_data)} bytes")
+        try:
+            img_mime_type = detect_mime_type(image_data)
+            if not img_mime_type.startswith("image/"):
+                logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
+                image_data = None # Invalidate image data
+            else:
+                logger.info(f"Image data received with MIME type: {img_mime_type}")
+        except Exception as e:
+            logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
+            image_data = None # Invalidate image data
     else:
         logger.info("No image data provided for video generation.")
 
@@ -1010,18 +1037,6 @@ async def generate_video_with_veo(
         else:
             async_client = get_gemini_client()
             logger.info("Synchronous Gemini client initialized for VEO generation.")
-
-        image_part = None
-        if image_data:
-            try:
-                img_mime_type = detect_mime_type(image_data)
-                if not img_mime_type.startswith("image/"):
-                    logger.error(f"Invalid MIME type for image_data: {img_mime_type}. Skipping image.")
-                else:
-                    logger.info(f"Image data received with MIME type: {img_mime_type}")
-            except Exception as e:
-                logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
-                image_part = None # Ensure it's None if processing failed
         
         video_config = types.GenerateVideosConfig(
             person_generation="allow_adult",
@@ -1035,7 +1050,7 @@ async def generate_video_with_veo(
             operation = await async_client.aio.models.generate_videos(
                 model=GEMINI_VIDEO_MODEL if not USE_VERTEX_VIDEO else VERTEX_VIDEO_MODEL,
                 prompt=combined_prompt,
-                image=image_data if image_part else None,
+                image=image_data,
                 config=video_config
             )
             logger.info(f"Initial operation received, Done: {operation.done}")
@@ -1046,7 +1061,7 @@ async def generate_video_with_veo(
 
             while not operation.done and attempts < max_polling_attempts:
                 logger.info(f"Polling operation '{operation.name}', attempt {attempts + 1}. Sleeping for {polling_interval}s.")
-                time.sleep(polling_interval)
+                await asyncio.sleep(polling_interval)
                 operation = async_client.operations.get(operation)
                 logger.info(f"Operation status: Done={operation.done}")
                 attempts += 1
