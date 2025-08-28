@@ -869,7 +869,7 @@ async def generate_image_with_gemini(
                     logger.error(f"Failed to download image from {url}")
 
             if image_data_list:
-                model = "models/gemini-2.5-flash-image-preview" # As requested
+                model = GEMINI_IMAGE_MODEL
                 config = types.GenerateContentConfig(
                     response_modalities=['TEXT', 'IMAGE'],
                     max_output_tokens=65535,
@@ -893,7 +893,7 @@ async def generate_image_with_gemini(
 
         if not input_image_urls:
             # Text-only image generation
-            model = "models/gemini-2.5-flash-image-preview" # As requested
+            model = GEMINI_IMAGE_MODEL
             # Prepend a specific instruction to the prompt for text-only image generation
             image_generation_prompt = f"Generate an image of {prompt}"
             config = types.GenerateContentConfig(
@@ -1014,6 +1014,7 @@ async def generate_video_with_veo(
     logger.info(f"User prompt: {user_prompt[:100]}...")
     
     combined_prompt = user_prompt
+    image_obj = None
 
     if image_data:
         logger.info(f"Image data provided: {len(image_data)} bytes")
@@ -1024,6 +1025,8 @@ async def generate_video_with_veo(
                 image_data = None # Invalidate image data
             else:
                 logger.info(f"Image data received with MIME type: {img_mime_type}")
+                # Convert raw bytes to a genai.types.Image object before sending
+                image_obj = types.Image(image_bytes=image_data, mime_type=img_mime_type)
         except Exception as e:
             logger.error(f"Error processing image_data: {e}. Skipping image.", exc_info=True)
             image_data = None # Invalidate image data
@@ -1050,7 +1053,7 @@ async def generate_video_with_veo(
             operation = await async_client.aio.models.generate_videos(
                 model=GEMINI_VIDEO_MODEL if not USE_VERTEX_VIDEO else VERTEX_VIDEO_MODEL,
                 prompt=combined_prompt,
-                image=image_data,
+                image=image_obj,
                 config=video_config
             )
             logger.info(f"Initial operation received, Done: {operation.done}")

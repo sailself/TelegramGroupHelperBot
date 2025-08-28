@@ -2,6 +2,7 @@
 
 import json
 import logging
+import asyncio
 import time
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -846,10 +847,29 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Get potential image from a replied message if no image in the command message
     if not image_urls and update.effective_message.reply_to_message:
         replied_message = update.effective_message.reply_to_message
-        if replied_message.photo:
+        # Check for media group
+        if replied_message.media_group_id:
+            # This part is tricky as we need to gather all messages from the media group.
+            # We'll rely on a caching mechanism that should be implemented in the main bot logic.
+            # For now, we'll assume a helper function get_media_group_messages exists.
+            # This is a placeholder for a more robust implementation.
+            logger.info(f"Handling media group with ID: {replied_message.media_group_id}")
+            # A simple sleep might work for small groups if messages arrive close together.
+            await asyncio.sleep(1)
+            media_messages = context.bot_data.get(replied_message.media_group_id, [])
+            # The current message might not be in bot_data yet, so we add it.
+            if replied_message not in media_messages:
+                media_messages.append(replied_message)
+
+            for msg in media_messages:
+                if msg.photo:
+                    photo = msg.photo[-1]
+                    photo_file = await context.bot.get_file(photo.file_id)
+                    image_urls.append(photo_file.file_path)
+        elif replied_message.photo:
             photo = replied_message.photo[-1]
             photo_file = await context.bot.get_file(photo.file_id)
-            image_urls.append(photo_file.file_path)
+            image_urls.append(photo_file.file_path) # Add the photo to the list
         
         replied_text_content = replied_message.text or replied_message.caption or ""
         if replied_text_content:
