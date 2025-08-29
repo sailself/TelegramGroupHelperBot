@@ -14,6 +14,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **Telegraph Integration**: Automatically creates Telegraph pages for lengthy responses
 - **Database Logging**: Messages are stored in a database for summarization and analysis
 - **Multi-language Support**: Automatically detects and responds in the same language as the query
+- **Support Integration**: Customizable support message with Ko-fi link for tip collection
 
 ## Requirements
 
@@ -74,6 +75,10 @@ Configure the bot by editing the `.env` file:
 
 ### Image hosting settings:
 - `CWD_PW_API_KEY`: Your CWD.PW API key for image hosting (optional, required for external image hosting)
+
+### Support/Ko-fi settings:
+- `SUPPORT_MESSAGE`: Custom message displayed with the `/support` command (default: "☕ If you find this bot helpful, consider supporting its development!")
+- `KOFI_LINK`: Your Ko-fi profile URL for accepting tips (default: "https://ko-fi.com/yourusername")
 
 ### Optional settings:
 - `DATABASE_URL`: Database connection URL (default: SQLite)

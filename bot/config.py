@@ -100,6 +100,10 @@ USER_HISTORY_MESSAGE_COUNT = int(os.getenv("USER_HISTORY_MESSAGE_COUNT", "200"))
 # CWD.PW image upload settings
 CWD_PW_API_KEY = os.getenv("CWD_PW_API_KEY", "")
 
+# Support/Ko-fi settings
+SUPPORT_MESSAGE = os.getenv("SUPPORT_MESSAGE", "如果觉得{bot_name}有帮助，可以支持一下它的开发！")
+SUPPORT_LINK = os.getenv("SUPPORT_LINK", "")
+
 # Prompt for a short summary
 TLDR_SYSTEM_PROMPT = """你是一个AI助手，名叫{bot_name}，请用中文总结以下群聊内容。
 请先汇总出群聊主要内容。

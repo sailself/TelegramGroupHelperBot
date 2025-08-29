@@ -35,6 +35,8 @@ from bot.config import (
     USE_VERTEX_IMAGE,
     VERTEX_IMAGE_MODEL,
     PORTRAIT_SYSTEM_PROMPT,
+    SUPPORT_MESSAGE,
+    SUPPORT_LINK,
 )
 from bot.db.database import ( # Reformatted for clarity
     queue_message_insert, 
@@ -1124,6 +1126,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /vid [prompt] - Generate a video based on text and/or a replied-to image.\n"
         "• /profileme - Generate your user profile based on your chat history.\n"
         "• /paintme - Generate an image representing you based on your chat history.\n"
+        "• /support - Show support information and Ko-fi link\n"
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
@@ -1381,7 +1384,36 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     /portraitme - Generate a portrait of you based on your chat history in this group.
     Usage: `/portraitme`
 
+    /support - Show support information and Ko-fi link
+    Usage: `/support`
+
     /help - Show this help message
     """
 
-    await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN) 
+    await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
+
+
+async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /support command.
+
+    Args:
+        update: The update containing the message.
+        context: The context object.
+    """
+    if update.effective_message is None or update.effective_chat is None:
+        return
+    
+    # Create the support message with inline keyboard
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    
+    # Create inline keyboard with Ko-fi link button
+    keyboard = [
+        [InlineKeyboardButton("投喂", url=SUPPORT_LINK)]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.effective_message.reply_text(
+        SUPPORT_MESSAGE,
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN
+    ) 

@@ -33,6 +33,7 @@ from bot.handlers import (
     profileme_handler,
     paintme_handler,
     handle_media_group,
+    support_handler,
 )
 
 # Configure logging
@@ -67,6 +68,7 @@ def main():
     application.add_handler(CommandHandler("profileme", profileme_handler))
     application.add_handler(CommandHandler("paintme", paintme_handler))
     application.add_handler(CommandHandler("portraitme", paintme_handler))
+    application.add_handler(CommandHandler("support", support_handler))
     
     # Handler for media groups
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_media_group), group=1)
