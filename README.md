@@ -80,6 +80,9 @@ Configure the bot by editing the `.env` file:
 - `SUPPORT_MESSAGE`: Custom message displayed with the `/support` command (default: "☕ If you find this bot helpful, consider supporting its development!")
 - `KOFI_LINK`: Your Ko-fi profile URL for accepting tips (default: "https://ko-fi.com/yourusername")
 
+### Whitelist settings:
+- `WHITELIST_FILE_PATH`: Path to the whitelist file containing allowed user IDs (default: "allowed_chat.txt")
+
 ### Optional settings:
 - `DATABASE_URL`: Database connection URL (default: SQLite)
 - `USE_WEBHOOK`: Whether to use webhook mode (default: false)
@@ -174,6 +177,60 @@ The bot leverages Gemini's advanced image understanding capabilities to:
 - Process multiple image formats (JPEG, PNG, WEBP, HEIC, HEIF)
 
 Simply reply to an image with `/q What's in this picture?` or `/factcheck` to analyze visual content.
+
+## User and Chat Whitelist
+
+The bot includes a comprehensive whitelist feature to restrict access to authorized users and groups:
+
+### Features:
+- **Access Control**: Only users or groups listed in the whitelist file can use bot commands
+- **Flexible Access**: Users can access the bot if either their user ID OR their group chat ID is whitelisted
+- **Backward Compatibility**: If no whitelist file exists, all users and groups are allowed (default behavior)
+- **Easy Management**: Simple text file with one ID per line (user IDs or group chat IDs)
+- **Security**: Failed whitelist checks are logged for monitoring
+
+### Configuration:
+1. Create a file named `allowed_chat.txt` (or set `WHITELIST_FILE_PATH` in your `.env`)
+2. Add one Telegram user ID or group chat ID per line
+3. Restart the bot
+
+### Getting User IDs:
+- Ask users to send a message to [@userinfobot](https://t.me/userinfobot)
+- Check bot logs when users send commands (temporarily disable whitelist first)
+- Use Telegram's API to get user information
+
+### Getting Group Chat IDs:
+- Add the bot to the group
+- Send a command in the group
+- Check the bot logs - you'll see the chat_id (negative number)
+- Or use [@userinfobot](https://t.me/userinfobot) in the group to get the group ID
+- Or use the included `get_chat_id.py` script to easily get IDs
+
+### Example whitelist file:
+```
+# Telegram User and Chat Whitelist
+# Add one ID per line (user IDs or group chat IDs)
+
+# User IDs (positive numbers):
+123456789
+987654321
+
+# Group Chat IDs (negative numbers):
+-1001234567890
+-1009876543210
+```
+
+### Disabling Whitelist:
+To allow all users (disable whitelist), either:
+- Delete the `allowed_chat.txt` file
+- Set `WHITELIST_FILE_PATH` to a non-existent file path
+
+### Helper Script:
+Use the included `get_chat_id.py` script to easily get user and chat IDs:
+1. Edit the script and set your bot token
+2. Run: `python get_chat_id.py`
+3. Send a message to your bot
+4. The script will display all the ID information you need for the whitelist
 
 ## Image Hosting Integration
 
