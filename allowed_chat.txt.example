@@ -1,0 +1,21 @@
+# Telegram User and Chat Whitelist
+# Add one ID per line (user IDs or group chat IDs)
+# 
+# User IDs (positive numbers):
+# 123456789
+# 987654321
+# 
+# Group Chat IDs (negative numbers):
+# -1001234567890
+# -1009876543210
+# 
+# To get a user ID, you can:
+# 1. Ask the user to send a message to @userinfobot
+# 2. Or use the bot's logs when a user sends a command
+# 3. Or temporarily disable the whitelist to see user IDs in logs
+# 
+# To get a group chat ID:
+# 1. Add the bot to the group
+# 2. Send a command in the group
+# 3. Check the bot logs - you'll see the chat_id (negative number)
+# 4. Or use @userinfobot in the group to get the group ID

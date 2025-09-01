@@ -1,5 +1,7 @@
 # Environment variables
 .env
+# Allowed chats
+allowed_chat.txt
 
 # Python
 __pycache__/

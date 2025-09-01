@@ -4,6 +4,7 @@ import json
 import logging
 import asyncio
 import time
+import os
 from datetime import datetime
 from typing import Dict, List, Optional
 import markdown
@@ -37,6 +38,7 @@ from bot.config import (
     PORTRAIT_SYSTEM_PROMPT,
     SUPPORT_MESSAGE,
     SUPPORT_LINK,
+    WHITELIST_FILE_PATH,
 )
 from bot.db.database import ( # Reformatted for clarity
     queue_message_insert, 
@@ -81,6 +83,81 @@ def is_rate_limited(user_id: int) -> bool:
     
     user_rate_limits[user_id] = current_time
     return False
+
+
+def is_user_whitelisted(user_id: int) -> bool:
+    """Check if a user is whitelisted to use the bot.
+
+    Args:
+        user_id: The ID of the user to check.
+
+    Returns:
+        True if the user is whitelisted, False otherwise.
+    """
+    try:
+        # If whitelist file doesn't exist, allow all users (backward compatibility)
+        if not os.path.exists(WHITELIST_FILE_PATH):
+            logger.info(f"Whitelist file {WHITELIST_FILE_PATH} not found, allowing all users")
+            return True
+        
+        with open(WHITELIST_FILE_PATH, 'r', encoding='utf-8') as f:
+            allowed_ids = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+        
+        # Check if user_id is in the whitelist
+        return str(user_id) in allowed_ids
+        
+    except Exception as e:
+        logger.error(f"Error checking whitelist for user {user_id}: {e}")
+        # In case of error, deny access for security
+        return False
+
+
+def is_chat_whitelisted(chat_id: int) -> bool:
+    """Check if a chat (group/channel) is whitelisted to use the bot.
+
+    Args:
+        chat_id: The ID of the chat to check.
+
+    Returns:
+        True if the chat is whitelisted, False otherwise.
+    """
+    try:
+        # If whitelist file doesn't exist, allow all chats (backward compatibility)
+        if not os.path.exists(WHITELIST_FILE_PATH):
+            logger.info(f"Whitelist file {WHITELIST_FILE_PATH} not found, allowing all chats")
+            return True
+        
+        with open(WHITELIST_FILE_PATH, 'r', encoding='utf-8') as f:
+            allowed_ids = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+        
+        # Check if chat_id is in the whitelist
+        return str(chat_id) in allowed_ids
+        
+    except Exception as e:
+        logger.error(f"Error checking whitelist for chat {chat_id}: {e}")
+        # In case of error, deny access for security
+        return False
+
+
+def is_access_allowed(user_id: int, chat_id: int) -> bool:
+    """Check if access is allowed for both user and chat.
+
+    Args:
+        user_id: The ID of the user to check.
+        chat_id: The ID of the chat to check.
+
+    Returns:
+        True if access is allowed, False otherwise.
+    """
+    # Check if user is whitelisted
+    user_allowed = is_user_whitelisted(user_id)
+    
+    # Check if chat is whitelisted
+    chat_allowed = is_chat_whitelisted(chat_id)
+    
+    # Access is allowed if either user OR chat is whitelisted
+    # This means users can use the bot in whitelisted chats, and whitelisted users can use it anywhere
+    return user_allowed or chat_allowed
 
 def markdown_to_telegraph_nodes(md_content: str) -> List[Dict]:
     """Convert markdown content to Telegraph node format.
@@ -335,6 +412,13 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_message is None or update.effective_chat is None:
         return
 
+    # Check if user is whitelisted
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
+
     # Check if user is rate limited
     if is_rate_limited(update.effective_message.from_user.id):
         await update.effective_message.reply_text(
@@ -444,6 +528,13 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         context: The context object.
     """
     if update.effective_message is None or update.effective_chat is None:
+        return
+
+    # Check if user is whitelisted
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
         return
 
     # Check if user is rate limited
@@ -615,6 +706,13 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         context: The context object.
     """
     if update.effective_message is None or update.effective_chat is None:
+        return
+
+    # Check if user is whitelisted
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
         return
 
     if is_rate_limited(update.effective_message.from_user.id):
@@ -806,6 +904,13 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     user_id = update.effective_user.id
     
+    # Check if user is whitelisted
+    if not is_access_allowed(user_id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
+    
     # Check rate limiting
     if is_rate_limited(user_id):
         await update.effective_message.reply_text(
@@ -978,6 +1083,13 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     user_id = update.effective_user.id
     
+    # Check if user is whitelisted
+    if not is_access_allowed(user_id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
+    
     # Rate Limiting
     if is_rate_limited(user_id):
         await update.effective_message.reply_text(
@@ -1115,6 +1227,13 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """
     if update.effective_message is None or update.effective_chat is None:
         return
+
+    # Check if user is whitelisted
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
     
     welcome_message = (
         "👋 Hello! I'm TelegramGroupHelperBot, your AI assistant for this chat.\n\n"
@@ -1144,6 +1263,13 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     user_id = update.effective_user.id
+
+    # Check if user is whitelisted
+    if not is_access_allowed(user_id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
 
     if is_rate_limited(user_id):
         await update.effective_message.reply_text("Rate limit exceeded. Please try again later.")
@@ -1278,6 +1404,13 @@ async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     user_id = update.effective_user.id
 
+    # Check if user is whitelisted
+    if not is_access_allowed(user_id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
+
     # Check if user is rate limited
     if is_rate_limited(user_id):
         await update.effective_message.reply_text(
@@ -1353,6 +1486,13 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     """
     if update.effective_message is None or update.effective_chat is None:
         return
+
+    # Check if user is whitelisted
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
+        return
     
     help_text = """
     *TelegramGroupHelperBot Commands*
@@ -1401,6 +1541,13 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context: The context object.
     """
     if update.effective_message is None or update.effective_chat is None:
+        return
+
+    # Check if user is whitelisted
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this bot. Please contact the administrator."
+        )
         return
     
     # Create the support message with inline keyboard
