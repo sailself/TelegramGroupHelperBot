@@ -107,6 +107,9 @@ SUPPORT_LINK = os.getenv("SUPPORT_LINK", "")
 # Whitelist settings
 WHITELIST_FILE_PATH = os.getenv("WHITELIST_FILE_PATH", "allowed_chat.txt")
 
+# Access control settings
+ACCESS_CONTROLLED_COMMANDS = os.getenv("ACCESS_CONTROLLED_COMMANDS", "").split(",") if os.getenv("ACCESS_CONTROLLED_COMMANDS") else []
+
 # Prompt for a short summary
 TLDR_SYSTEM_PROMPT = """你是一个AI助手，名叫{bot_name}，请用中文总结以下群聊内容。
 请先汇总出群聊主要内容。

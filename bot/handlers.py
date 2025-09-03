@@ -39,6 +39,7 @@ from bot.config import (
     SUPPORT_MESSAGE,
     SUPPORT_LINK,
     WHITELIST_FILE_PATH,
+    ACCESS_CONTROLLED_COMMANDS,
 )
 from bot.db.database import ( # Reformatted for clarity
     queue_message_insert, 
@@ -64,6 +65,10 @@ logger = logging.getLogger(__name__)
 # Dictionary to store user rate limits
 user_rate_limits: Dict[int, float] = {}
 
+# Whitelist cache - loaded once during startup
+_whitelist_cache: Optional[List[str]] = None
+_whitelist_loaded = False
+
 def is_rate_limited(user_id: int) -> bool:
     """Check if a user is rate limited.
 
@@ -85,6 +90,35 @@ def is_rate_limited(user_id: int) -> bool:
     return False
 
 
+def load_whitelist() -> None:
+    """Load whitelist from file into memory cache.
+    
+    This function should be called once during application startup.
+    """
+    global _whitelist_cache, _whitelist_loaded
+    
+    try:
+        # If whitelist file doesn't exist, allow all users (backward compatibility)
+        if not os.path.exists(WHITELIST_FILE_PATH):
+            logger.info(f"Whitelist file {WHITELIST_FILE_PATH} not found, allowing all users")
+            _whitelist_cache = None
+            _whitelist_loaded = True
+            return
+        
+        with open(WHITELIST_FILE_PATH, 'r', encoding='utf-8') as f:
+            allowed_ids = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
+        
+        _whitelist_cache = allowed_ids
+        _whitelist_loaded = True
+        logger.info(f"Loaded {len(allowed_ids)} entries from whitelist file {WHITELIST_FILE_PATH}")
+        
+    except Exception as e:
+        logger.error(f"Error loading whitelist: {e}")
+        # In case of error, deny access for security by setting empty list
+        _whitelist_cache = []
+        _whitelist_loaded = True
+
+
 def is_user_whitelisted(user_id: int) -> bool:
     """Check if a user is whitelisted to use the bot.
 
@@ -94,22 +128,18 @@ def is_user_whitelisted(user_id: int) -> bool:
     Returns:
         True if the user is whitelisted, False otherwise.
     """
-    try:
-        # If whitelist file doesn't exist, allow all users (backward compatibility)
-        if not os.path.exists(WHITELIST_FILE_PATH):
-            logger.info(f"Whitelist file {WHITELIST_FILE_PATH} not found, allowing all users")
-            return True
-        
-        with open(WHITELIST_FILE_PATH, 'r', encoding='utf-8') as f:
-            allowed_ids = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
-        
-        # Check if user_id is in the whitelist
-        return str(user_id) in allowed_ids
-        
-    except Exception as e:
-        logger.error(f"Error checking whitelist for user {user_id}: {e}")
-        # In case of error, deny access for security
-        return False
+    global _whitelist_cache, _whitelist_loaded
+    
+    # If whitelist hasn't been loaded yet, load it
+    if not _whitelist_loaded:
+        load_whitelist()
+    
+    # If whitelist cache is None, it means the file doesn't exist - allow all users
+    if _whitelist_cache is None:
+        return True
+    
+    # Check if user_id is in the cached whitelist
+    return str(user_id) in _whitelist_cache
 
 
 def is_chat_whitelisted(chat_id: int) -> bool:
@@ -121,22 +151,18 @@ def is_chat_whitelisted(chat_id: int) -> bool:
     Returns:
         True if the chat is whitelisted, False otherwise.
     """
-    try:
-        # If whitelist file doesn't exist, allow all chats (backward compatibility)
-        if not os.path.exists(WHITELIST_FILE_PATH):
-            logger.info(f"Whitelist file {WHITELIST_FILE_PATH} not found, allowing all chats")
-            return True
-        
-        with open(WHITELIST_FILE_PATH, 'r', encoding='utf-8') as f:
-            allowed_ids = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
-        
-        # Check if chat_id is in the whitelist
-        return str(chat_id) in allowed_ids
-        
-    except Exception as e:
-        logger.error(f"Error checking whitelist for chat {chat_id}: {e}")
-        # In case of error, deny access for security
-        return False
+    global _whitelist_cache, _whitelist_loaded
+    
+    # If whitelist hasn't been loaded yet, load it
+    if not _whitelist_loaded:
+        load_whitelist()
+    
+    # If whitelist cache is None, it means the file doesn't exist - allow all chats
+    if _whitelist_cache is None:
+        return True
+    
+    # Check if chat_id is in the cached whitelist
+    return str(chat_id) in _whitelist_cache
 
 
 def is_access_allowed(user_id: int, chat_id: int) -> bool:
@@ -158,6 +184,53 @@ def is_access_allowed(user_id: int, chat_id: int) -> bool:
     # Access is allowed if either user OR chat is whitelisted
     # This means users can use the bot in whitelisted chats, and whitelisted users can use it anywhere
     return user_allowed or chat_allowed
+
+
+def requires_access_control(command: str) -> bool:
+    """Check if a command requires access control.
+    
+    Args:
+        command: The command name (without the / prefix)
+        
+    Returns:
+        True if the command requires access control, False otherwise.
+    """
+    # If ACCESS_CONTROLLED_COMMANDS is empty or None, apply no access control
+    if not ACCESS_CONTROLLED_COMMANDS:
+        return False
+    
+    # Check if command is in the list of access-controlled commands
+    return command in ACCESS_CONTROLLED_COMMANDS
+
+
+async def check_access_control(update: Update, command: str) -> bool:
+    """Check access control for a command if required.
+    
+    Args:
+        update: The update containing the message.
+        command: The command name (without the / prefix)
+        
+    Returns:
+        True if access is allowed or not required, False if access is denied.
+        
+    Side effects:
+        Sends an error message to the user if access is denied.
+    """
+    if update.effective_message is None or update.effective_chat is None:
+        return False
+        
+    # If command doesn't require access control, allow it
+    if not requires_access_control(command):
+        return True
+    
+    # Check if user has access
+    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
+        await update.effective_message.reply_text(
+            "You are not authorized to use this command. Please contact the administrator."
+        )
+        return False
+        
+    return True
 
 def markdown_to_telegraph_nodes(md_content: str) -> List[Dict]:
     """Convert markdown content to Telegraph node format.
@@ -412,11 +485,8 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is whitelisted
-    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "tldr"):
         return
 
     # Check if user is rate limited
@@ -530,11 +600,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is whitelisted
-    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "factcheck"):
         return
 
     # Check if user is rate limited
@@ -708,11 +775,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is whitelisted
-    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "q"):
         return
 
     if is_rate_limited(update.effective_message.from_user.id):
@@ -904,11 +968,8 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     user_id = update.effective_user.id
     
-    # Check if user is whitelisted
-    if not is_access_allowed(user_id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "img"):
         return
     
     # Check rate limiting
@@ -1083,11 +1144,8 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     user_id = update.effective_user.id
     
-    # Check if user is whitelisted
-    if not is_access_allowed(user_id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "vid"):
         return
     
     # Rate Limiting
@@ -1228,11 +1286,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is whitelisted
-    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "start"):
         return
     
     welcome_message = (
@@ -1264,11 +1319,8 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     user_id = update.effective_user.id
 
-    # Check if user is whitelisted
-    if not is_access_allowed(user_id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "paintme"):
         return
 
     if is_rate_limited(user_id):
@@ -1404,11 +1456,8 @@ async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     user_id = update.effective_user.id
 
-    # Check if user is whitelisted
-    if not is_access_allowed(user_id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "profileme"):
         return
 
     # Check if user is rate limited
@@ -1487,11 +1536,8 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is whitelisted
-    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "help"):
         return
     
     help_text = """
@@ -1543,11 +1589,8 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if update.effective_message is None or update.effective_chat is None:
         return
 
-    # Check if user is whitelisted
-    if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
-        await update.effective_message.reply_text(
-            "You are not authorized to use this bot. Please contact the administrator."
-        )
+    # Check access control
+    if not await check_access_control(update, "support"):
         return
     
     # Create the support message with inline keyboard

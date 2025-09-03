@@ -34,6 +34,7 @@ from bot.handlers import (
     paintme_handler,
     handle_media_group,
     support_handler,
+    load_whitelist,
 )
 
 # Configure logging
@@ -47,9 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 async def init_db_wrapper():
-    """Initialize the database."""
+    """Initialize the database and load whitelist."""
     await init_db()
     logger.info("Database initialization completed")
+    
+    # Load whitelist cache
+    load_whitelist()
+    logger.info("Whitelist cache loaded")
 
 
 def main():
