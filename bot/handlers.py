@@ -7,25 +7,25 @@ import time
 import os
 from datetime import datetime
 from typing import Dict, List, Optional
+import re
+from io import BytesIO
 import markdown
 from bs4 import BeautifulSoup
 
 import langid
 import requests
-from bs4 import BeautifulSoup
 from html2text import html2text
 from telegram import Update, InputMediaPhoto
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-import re
 from pycountry import languages
 
 from bot.config import (
-    RATE_LIMIT_SECONDS, 
-    TELEGRAM_MAX_LENGTH, 
-    TLDR_SYSTEM_PROMPT, 
-    FACTCHECK_SYSTEM_PROMPT, 
+    RATE_LIMIT_SECONDS,
+    TELEGRAM_MAX_LENGTH,
+    TLDR_SYSTEM_PROMPT,
+    FACTCHECK_SYSTEM_PROMPT,
     Q_SYSTEM_PROMPT,
     PROFILEME_SYSTEM_PROMPT,
     PAINTME_SYSTEM_PROMPT,
@@ -43,8 +43,8 @@ from bot.config import (
     GEMINI_IMAGE_MODEL,
 )
 from bot.db.database import ( # Reformatted for clarity
-    queue_message_insert, 
-    select_messages_from_id, 
+    queue_message_insert,
+    select_messages_from_id,
     select_messages_by_user
 )
 from bot.llm import (
@@ -55,7 +55,6 @@ from bot.llm import (
     generate_video_with_veo,
     ImageGenerationError,
 )
-from io import BytesIO
 
 # Configure logging
 logging.basicConfig(
@@ -79,14 +78,14 @@ def is_rate_limited(user_id: int) -> bool:
     Returns:
         True if the user is rate limited, False otherwise.
     """
-    global user_rate_limits
+    global user_rate_limits  # noqa: PLW0603
     current_time = time.time()
-    
+
     if user_id in user_rate_limits:
         last_request_time = user_rate_limits[user_id]
         if current_time - last_request_time < RATE_LIMIT_SECONDS:
             return True
-    
+
     user_rate_limits[user_id] = current_time
     return False
 
@@ -96,25 +95,25 @@ def load_whitelist() -> None:
     
     This function should be called once during application startup.
     """
-    global _whitelist_cache, _whitelist_loaded
-    
+    global _whitelist_cache, _whitelist_loaded  # noqa: PLW0603
+
     try:
         # If whitelist file doesn't exist, allow all users (backward compatibility)
         if not os.path.exists(WHITELIST_FILE_PATH):
-            logger.info(f"Whitelist file {WHITELIST_FILE_PATH} not found, allowing all users")
+            logger.info("Whitelist file {WHITELIST_FILE_PATH} not found, allowing all users")
             _whitelist_cache = None
             _whitelist_loaded = True
             return
-        
+
         with open(WHITELIST_FILE_PATH, 'r', encoding='utf-8') as f:
             allowed_ids = [line.strip() for line in f.readlines() if line.strip() and not line.strip().startswith('#')]
-        
+
         _whitelist_cache = allowed_ids
         _whitelist_loaded = True
-        logger.info(f"Loaded {len(allowed_ids)} entries from whitelist file {WHITELIST_FILE_PATH}")
-        
-    except Exception as e:
-        logger.error(f"Error loading whitelist: {e}")
+        logger.info("Loaded %d entries from whitelist file %s", len(allowed_ids), WHITELIST_FILE_PATH)
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error loading whitelist: %s", e)
         # In case of error, deny access for security by setting empty list
         _whitelist_cache = []
         _whitelist_loaded = True
@@ -129,16 +128,16 @@ def is_user_whitelisted(user_id: int) -> bool:
     Returns:
         True if the user is whitelisted, False otherwise.
     """
-    global _whitelist_cache, _whitelist_loaded
-    
+    global _whitelist_cache, _whitelist_loaded  # noqa: PLW0602
+
     # If whitelist hasn't been loaded yet, load it
     if not _whitelist_loaded:
         load_whitelist()
-    
+
     # If whitelist cache is None, it means the file doesn't exist - allow all users
     if _whitelist_cache is None:
         return True
-    
+
     # Check if user_id is in the cached whitelist
     return str(user_id) in _whitelist_cache
 
@@ -152,16 +151,16 @@ def is_chat_whitelisted(chat_id: int) -> bool:
     Returns:
         True if the chat is whitelisted, False otherwise.
     """
-    global _whitelist_cache, _whitelist_loaded
-    
+    global _whitelist_cache, _whitelist_loaded  # noqa: PLW0602
+
     # If whitelist hasn't been loaded yet, load it
     if not _whitelist_loaded:
         load_whitelist()
-    
+
     # If whitelist cache is None, it means the file doesn't exist - allow all chats
     if _whitelist_cache is None:
         return True
-    
+
     # Check if chat_id is in the cached whitelist
     return str(chat_id) in _whitelist_cache
 
@@ -178,10 +177,10 @@ def is_access_allowed(user_id: int, chat_id: int) -> bool:
     """
     # Check if user is whitelisted
     user_allowed = is_user_whitelisted(user_id)
-    
+
     # Check if chat is whitelisted
     chat_allowed = is_chat_whitelisted(chat_id)
-    
+
     # Access is allowed if either user OR chat is whitelisted
     # This means users can use the bot in whitelisted chats, and whitelisted users can use it anywhere
     return user_allowed or chat_allowed
@@ -199,7 +198,7 @@ def requires_access_control(command: str) -> bool:
     # If ACCESS_CONTROLLED_COMMANDS is empty or None, apply no access control
     if not ACCESS_CONTROLLED_COMMANDS:
         return False
-    
+
     # Check if command is in the list of access-controlled commands
     return command in ACCESS_CONTROLLED_COMMANDS
 
@@ -219,18 +218,18 @@ async def check_access_control(update: Update, command: str) -> bool:
     """
     if update.effective_message is None or update.effective_chat is None:
         return False
-        
+
     # If command doesn't require access control, allow it
     if not requires_access_control(command):
         return True
-    
+
     # Check if user has access
     if not is_access_allowed(update.effective_message.from_user.id, update.effective_chat.id):
         await update.effective_message.reply_text(
             "You are not authorized to use this command. Please contact the administrator."
         )
         return False
-        
+
     return True
 
 def markdown_to_telegraph_nodes(md_content: str) -> List[Dict]:
@@ -244,10 +243,10 @@ def markdown_to_telegraph_nodes(md_content: str) -> List[Dict]:
     """
     # Convert markdown to HTML
     html_content = markdown.markdown(md_content)
-    
+
     # Parse HTML
     soup = BeautifulSoup(html_content, 'html.parser')
-    
+
     # Convert to Telegraph nodes
     return html_to_telegraph_nodes(soup)
 
@@ -261,7 +260,7 @@ def html_to_telegraph_nodes(element) -> List[Dict]:
         List of Telegraph node objects
     """
     nodes = []
-    
+
     # Process all child elements
     for child in element.children:
         # Text node
@@ -279,7 +278,7 @@ def html_to_telegraph_nodes(element) -> List[Dict]:
                 table_html_str = str(child)
                 # Remove newlines from table_html_str to prevent html2text from adding too many blank lines
                 table_html_str = table_html_str.replace('\n', '')
-                table_text = html2text.html2text(table_html_str)
+                table_text = html2text(table_html_str)
                 # Strip leading/trailing whitespace, but preserve internal formatting
                 stripped_table_text = table_text.strip()
                 if stripped_table_text: # Only add if there's content
@@ -311,14 +310,14 @@ def html_to_telegraph_nodes(element) -> List[Dict]:
                 if child.get('alt'):
                     node_content['attrs']['alt'] = child['alt']
             # Note: video, figure, figcaption attributes might be needed too if they use them.
-            
+
             # Process children recursively for the current supported tag
             processed_children = html_to_telegraph_nodes(child)
             if processed_children:
                 node_content['children'] = processed_children
-            
+
             nodes.append(node_content)
-            
+
     return nodes
 
 async def create_telegraph_page(title: str, content: str) -> Optional[str]:
@@ -334,7 +333,7 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
     try:
         # Convert markdown to Telegraph nodes
         nodes = markdown_to_telegraph_nodes(content)
-        
+
         # Create the page
         response = requests.post(
             'https://api.telegra.ph/createPage',
@@ -348,20 +347,20 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
             },
             timeout=10
         )
-        
+
         response_data = response.json()
-        
+
         if response_data.get('ok'):
             return response_data['result']['url']
         else:
             # This is an error from the API, not a Python exception in this block.
             # If we wanted to log the response_data itself for debugging, that's different.
             # For now, not adding exc_info=True as 'e' is not in this scope.
-            logger.error(f"Failed to create Telegraph page: {response_data.get('error')}")
+            logger.error("Failed to create Telegraph page: %s", response_data.get('error'))
             return None
-            
-    except Exception as e:
-        logger.error(f"Error creating Telegraph page: {e}", exc_info=True)
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error creating Telegraph page: %s", e, exc_info=True)
         return None
 
 
@@ -379,10 +378,10 @@ async def send_response(message, response, title="Response", parse_mode=ParseMod
     """
    # Count the number of lines in the response
     line_count = response.count('\n') + 1
-    
+
     # Check if message exceeds line count threshold or character limit
     if line_count > 22 or len(response) > TELEGRAM_MAX_LENGTH:
-        logger.info(f"Response length {len(response)} exceeds threshold {TELEGRAM_MAX_LENGTH}, creating Telegraph page")
+        logger.info("Response length %d exceeds threshold %d, creating Telegraph page", len(response), TELEGRAM_MAX_LENGTH)
         telegraph_url = await create_telegraph_page(title, response)
         if telegraph_url:
             await message.edit_text(
@@ -392,7 +391,7 @@ async def send_response(message, response, title="Response", parse_mode=ParseMod
             # Fallback: try to send as plain text
             try:
                 await message.edit_text(response)
-            except BadRequest as e:
+            except BadRequest:
                 # If still too long, truncate
                 await message.edit_text(
                     f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
@@ -404,8 +403,8 @@ async def send_response(message, response, title="Response", parse_mode=ParseMod
                 response,
                 parse_mode=parse_mode
             )
-        except Exception as e:
-            logger.warning(f"Failed to send response with formatting: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to send response with formatting: %s", e)
             # If formatting fails, try to send as plain text
             try:
                 await message.edit_text(response)
@@ -423,12 +422,12 @@ async def send_response(message, response, title="Response", parse_mode=ParseMod
                             f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
                         )
                 else:
-                    logger.error(f"Failed to send response as plain text: {plain_e}", exc_info=True)
+                    logger.error("Failed to send response as plain text: %s", plain_e, exc_info=True)
                     await message.edit_text(
                         "Error: Failed to format response. Please try again."
                     )
 
-async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
     """Log a message to the database.
 
     Args:
@@ -439,16 +438,16 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     message = update.effective_message
-    
+
     # Skip messages with no text content
     if not message.text and not message.caption:
         return
-    
+
     text = message.text or message.caption or ""
-    
+
     # Detect language
     language = languages.get(alpha_2=langid.classify(text)[0]).name
-    
+
     # Get the proper user display name
     if message.from_user:
         if message.from_user.full_name:
@@ -463,7 +462,7 @@ async def log_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             username = "Anonymous"
     else:
         username = "Anonymous"
-    
+
     # Queue message for insertion
     await queue_message_insert(
         user_id=message.from_user.id if message.from_user else 0,
@@ -500,36 +499,36 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     try:
         # Default to 100 messages if no number is provided
         count = 100
-        
+
         if context.args and len(context.args) > 0:
             try:
                 count = int(context.args[0])
-                
+
                 # Ensure count is reasonable
                 if count < 1:
                     count = 100
                 elif count > 500:
                     count = 500
-                    
+
             except ValueError:
                 # If the argument is not a valid number, default to 100
                 count = 100
-        
+
         # Send a "processing" message
         processing_message = await update.effective_message.reply_text(
             "Summarizing recent messages..."
         )
 
         from_message_id = update.effective_message.message_id - count
-        
+
         # Fetch recent messages
         # messages = await select_messages(chat_id=update.effective_chat.id, limit=count)
         messages = await select_messages_from_id(chat_id=update.effective_chat.id, message_id=from_message_id)
-        
+
         if not messages or len(messages) == 0:
             await processing_message.edit_text("No messages found to summarize.")
             return
-        
+
         # Format messages for the LLM
         formatted_messages = "Recent conversation:\n\n"
         for msg in messages:
@@ -540,30 +539,30 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 formatted_messages += f"msg[{msg.message_id}] reply_to[{msg.reply_to_message_id}] {timestamp} - {username}: {msg.text}\n\n"
             else:
                 formatted_messages += f"msg[{msg.message_id}] {timestamp} - {username}: {msg.text}\n\n"
-        
+
         # Use the configured system prompt
         prompt = TLDR_SYSTEM_PROMPT.format(bot_name=TELEGRAPH_AUTHOR_NAME)
-                
+
         # Generate summary using Gemini
         response = await call_gemini(
             system_prompt=prompt,
             user_content=formatted_messages
         )
-        
+
         if response:
             await send_response(processing_message, response, "Message Summary", ParseMode.MARKDOWN)
         else:
             await processing_message.edit_text(
                 "Failed to generate a summary. Please try again later."
             )
-            
-    except Exception as e:
-        logger.error(f"Error in tldr_handler: {e}", exc_info=True)
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in tldr_handler: %s", e, exc_info=True)
         try:
             await update.effective_message.reply_text(
                 f"Error summarizing messages: {str(e)}"
             )
-        except Exception:
+        except Exception:  # noqa: BLE001
             pass
 
 def extract_youtube_urls(text: str, max_urls: int = 10):
@@ -581,7 +580,6 @@ def extract_youtube_urls(text: str, max_urls: int = 10):
     for match in reversed(matches):  # reversed so replacement doesn't affect indices
         if count >= max_urls:
             break
-        full_url = match.group(0)
         vid_id = match.group(2)
         url = f"https://www.youtube.com/watch?v={vid_id}"
         urls.insert(0, url)  # maintain order
@@ -621,21 +619,21 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     # Get the message to fact-check
     message_to_check = update.effective_message.reply_to_message.text or update.effective_message.reply_to_message.caption or ""
-    
+
     # Get the message to fact-check
     replied_message = update.effective_message.reply_to_message
     message_to_check = replied_message.text or replied_message.caption or ""
-    
+
     image_data_list: List[bytes] = []
     video_data: Optional[bytes] = None
     video_mime_type: Optional[str] = None
     audio_data: Optional[bytes] = None
     audio_mime_type: Optional[str] = None
     youtube_urls = None
-    
+
     # Video processing (takes precedence)
     if replied_message.video:
-        logger.info(f"Fact-checking video: {replied_message.video.file_id} in chat {replied_message.chat.id}")
+        logger.info("Fact-checking video: {replied_message.video.file_id} in chat {replied_message.chat.id}")
         try:
             video_file = await context.bot.get_file(replied_message.video.file_id)
             video_mime_type = replied_message.video.mime_type
@@ -643,19 +641,19 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             if dl_video_data:
                 video_data = dl_video_data
                 image_data_list = [] # Clear images if video is present
-                logger.info(f"Video {replied_message.video.file_id} downloaded for fact-check. MIME: {video_mime_type}")
+                logger.info("Video {replied_message.video.file_id} downloaded for fact-check. MIME: {video_mime_type}")
                 if not message_to_check: # If no caption, use default prompt for video
                     message_to_check = "Please fact-check this video."
             else:
-                logger.error(f"Failed to download video {replied_message.video.file_id} for fact-check.")
-        except Exception as e:
-            logger.error(f"Error processing video for fact-check: {e}", exc_info=True)
+                logger.error("Failed to download video {replied_message.video.file_id} for fact-check.")
+        except Exception as e:  # noqa: BLE001
+            logger.error("Error processing video for fact-check: %s", e, exc_info=True)
 
     # Audio processing (takes precedence)
     if not video_data:
         audio = replied_message.audio if replied_message.audio else replied_message.voice
-        if audio: 
-            logger.info(f"Fact-checking audio: {audio.file_id}")
+        if audio:
+            logger.info("Fact-checking audio: {audio.file_id}")
             try:
                 audio_file = await context.bot.get_file(audio.file_id)
                 dl_audio_data = await download_media(audio_file.file_path)
@@ -663,11 +661,11 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     audio_data = dl_audio_data
                     audio_mime_type = audio.mime_type
                     image_data_list = [] # Clear images
-                    logger.info(f"Audio {audio.file_id} downloaded for fact-check. MIME: {audio_mime_type}")
+                    logger.info("Audio {audio.file_id} downloaded for fact-check. MIME: {audio_mime_type}")
                 else:
-                    logger.error(f"Failed to download audio {audio.file_id} for fact-check.")
-            except Exception as e:
-                logger.error(f"Error processing audio for fact-check: {e}", exc_info=True)
+                    logger.error("Failed to download audio {audio.file_id} for fact-check.")
+            except Exception as e:  # noqa: BLE001
+                logger.error("Error processing audio for fact-check: %s", e, exc_info=True)
     
     # Photo processing (only if video was not processed)
     if not video_data and not audio_data and replied_message.photo:
@@ -678,9 +676,9 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             img_bytes = await download_media(file.file_path)
             if img_bytes:
                 image_data_list.append(img_bytes)
-                logger.info(f"Added single image to fact-check list from message {replied_message.message_id}.")
-        except Exception as e:
-            logger.error(f"Error downloading single image for fact-check: {e}", exc_info=True)
+                logger.info("Added single image to fact-check list from message {replied_message.message_id}.")
+        except Exception:  # noqa: BLE001
+            logger.error("Error downloading single image for fact-check", exc_info=True)
 
     if not message_to_check and not image_data_list and not video_data and not audio_data: 
         await update.effective_message.reply_text(
@@ -690,7 +688,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     if message_to_check and not video_data and not image_data_list and not audio_data: # If message is present and no media is present, extract YouTube URLs
         # Extract YouTube URLs and replace in text
         message_to_check, youtube_urls = extract_youtube_urls(message_to_check)
-    
+
     # Default prompt if only media is present
     if not message_to_check:
         if video_data:
@@ -699,9 +697,9 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             message_to_check = "Please analyze this audio and verify any claims or content shown in it."
         elif image_data_list:
             message_to_check = "Please analyze these images and verify any claims or content shown in them."
-        
+
     language = languages.get(alpha_2=langid.classify(message_to_check)[0]).name
-    
+
     processing_message_text = "Fact-checking message..."
     if video_data:
         processing_message_text = "Analyzing video and fact-checking content..."
@@ -711,15 +709,15 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         processing_message_text = f"Analyzing {len(image_data_list)} image(s) and fact-checking content..."
     elif youtube_urls and len(youtube_urls) > 0:
         processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and fact-checking content..."
-    
+
     processing_message = await update.effective_message.reply_text(processing_message_text)
-    
+
     try:
         # Format the system prompt with the current date
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = FACTCHECK_SYSTEM_PROMPT.format(current_datetime=current_datetime)
         use_pro_model = bool(video_data or image_data_list or audio_data) # Use Pro model if media is present
-        
+
         # Get response from Gemini with fact checking
         full_response = await call_gemini(
             system_prompt=system_prompt,
@@ -741,14 +739,14 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             resp_msg = "Analyzing audio and checking facts"
         elif image_data_list:
             resp_msg = f"Analyzing {len(image_data_list)} image(s) and checking facts"
-        
+
         if use_pro_model:
             resp_msg = f"{resp_msg} with Pro Model...\nIt could take longer than usual, please be patient."
         else:
             resp_msg = f"{resp_msg}..."
-            
+
         await processing_message.edit_text(resp_msg, parse_mode=None)
-        
+
         # Final update with complete response
         if full_response:
             await send_response(processing_message, full_response, "Fact Check Results", ParseMode.MARKDOWN)
@@ -756,14 +754,14 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             await processing_message.edit_text(
                 "Failed to fact-check the message. Please try again later."
             )
-    
-    except Exception as e:
-        logger.error(f"Error in factcheck_handler: {e}", exc_info=True)
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in factcheck_handler: %s", e, exc_info=True)
         try:
             await processing_message.edit_text(
                 f"Error fact-checking message: {str(e)}"
             )
-        except Exception: # Inner exception during error reporting
+        except Exception:  # noqa: BLE001 # Inner exception during error reporting
             pass
 
 async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -792,7 +790,6 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         video_data: Optional[bytes] = None
         video_mime_type: Optional[str] = None
         target_message_for_media = None
-        media_group_id_to_log = None
         youtube_urls = None
         language = None
         audio_data: Optional[bytes] = None
@@ -802,22 +799,21 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             target_message_for_media = update.effective_message.reply_to_message
             replied_text_content = target_message_for_media.text or target_message_for_media.caption or ""
             if replied_text_content:
-                if query: 
+                if query:
                     language = languages.get(alpha_2=langid.classify(query)[0]).name # Response language should follow question
                     query = f"Context from replied message: \"{replied_text_content}\"\n\nQuestion: {query}"
-                else: 
+                else:
                     query = replied_text_content
-        else: 
+        else:
             if update.effective_message.photo or update.effective_message.video: # Check current message for media
-                 target_message_for_media = update.effective_message
-                 if not query and update.effective_message.caption:
-                     query = update.effective_message.caption
+                target_message_for_media = update.effective_message
+                if not query and update.effective_message.caption:
+                    query = update.effective_message.caption
 
         if target_message_for_media:
-            media_group_id_to_log = target_message_for_media.media_group_id
             # Video processing (takes precedence)
             if target_message_for_media.video:
-                logger.info(f"Q handler processing video: {target_message_for_media.video.file_id}")
+                logger.info("Q handler processing video: {target_message_for_media.video.file_id}")
                 try:
                     video_file = await context.bot.get_file(target_message_for_media.video.file_id)
                     dl_video_data = await download_media(video_file.file_path)
@@ -825,17 +821,17 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         video_data = dl_video_data
                         video_mime_type = target_message_for_media.video.mime_type
                         image_data_list = [] # Clear images
-                        logger.info(f"Video {target_message_for_media.video.file_id} downloaded for /q. MIME: {video_mime_type}")
+                        logger.info("Video %s downloaded for /q. MIME: %s", target_message_for_media.video.file_id, video_mime_type)
                     else:
-                        logger.error(f"Failed to download video {target_message_for_media.video.file_id} for /q.")
-                except Exception as e:
-                    logger.error(f"Error processing video for /q: {e}", exc_info=True)
-            
+                        logger.error("Failed to download video %s for /q.", target_message_for_media.video.file_id)
+                except Exception:  # noqa: BLE001
+                    logger.error("Error processing video for /q", exc_info=True)
+
             # Audio processing (takes precedence)
             if not video_data:
                 audio = target_message_for_media.audio if target_message_for_media.audio else target_message_for_media.voice
-                if audio: 
-                    logger.info(f"Q handler processing audio: {audio.file_id}")
+                if audio:
+                    logger.info("Q handler processing audio: {audio.file_id}")
                     try:
                         audio_file = await context.bot.get_file(audio.file_id)
                         dl_audio_data = await download_media(audio_file.file_path)
@@ -843,12 +839,12 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                             audio_data = dl_audio_data
                             audio_mime_type = audio.mime_type
                             image_data_list = [] # Clear images
-                            logger.info(f"Audio {audio.file_id} downloaded for /q. MIME: {audio_mime_type}")
+                            logger.info("Audio {audio.file_id} downloaded for /q. MIME: {audio_mime_type}")
                         else:
-                            logger.error(f"Failed to download audio {audio.file_id} for /q.")
-                    except Exception as e:
-                        logger.error(f"Error processing audio for /q: {e}", exc_info=True)
-            
+                            logger.error("Failed to download audio {audio.file_id} for /q.")
+                    except Exception:  # noqa: BLE001
+                        logger.error("Error processing audio for /q", exc_info=True)
+
             # Photo processing (only if video and audio was not processed)
             if not video_data and not audio_data and target_message_for_media.photo:
                 # Simplified to handle only the single photo from the target message
@@ -858,10 +854,10 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                     img_bytes = await download_media(file.file_path)
                     if img_bytes:
                         image_data_list.append(img_bytes)
-                        logger.info(f"Added single image to /q list from message {target_message_for_media.message_id}.")
-                except Exception as e:
-                    logger.error(f"Error downloading single image for /q: {e}", exc_info=True)
-        
+                        logger.info("Added single image to /q list from message {target_message_for_media.message_id}.")
+                except Exception as e:  # noqa: BLE001
+                    logger.error("Error downloading single image for /q: {e}", exc_info=True)
+
         if not query and not image_data_list and not video_data and not audio_data:
             await update.effective_message.reply_text(
                 "Please provide a question, reply to media, or caption media with /q."
@@ -869,10 +865,13 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         if not query: # Default prompt if only media is present
-            if video_data: query = "Please analyze this video."
-            elif audio_data: query = "Please analyze this audio."
-            elif image_data_list: query = "Please analyze these image(s)."
-        
+            if video_data:
+                query = "Please analyze this video."
+            elif audio_data:
+                query = "Please analyze this audio."
+            elif image_data_list:
+                query = "Please analyze these image(s)."
+
         if query and not video_data and not image_data_list and not audio_data: # If query is present and no media is present, extract YouTube URLs
             # Extract YouTube URLs and replace in text
             query, youtube_urls = extract_youtube_urls(query)
@@ -886,20 +885,24 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             processing_message_text = f"Analyzing {len(image_data_list)} image(s) and processing your question..."
         elif youtube_urls and len(youtube_urls) > 0:
             processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and processing your question..."
-        
+
         processing_message = await update.effective_message.reply_text(processing_message_text)
-        
+
         if not language:
             language = languages.get(alpha_2=langid.classify(query)[0]).name
-        
+
         username = "Anonymous"
         if update.effective_sender: # Should be update.effective_message.from_user
             sender = update.effective_message.from_user
-            if sender.full_name: username = sender.full_name
-            elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
-            elif sender.first_name: username = sender.first_name
-            elif sender.username: username = sender.username
-        
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name and sender.last_name:
+                username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
+
         await queue_message_insert(
             user_id=update.effective_message.from_user.id, # Use from_user here
             username=username,
@@ -910,11 +913,11 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             chat_id=update.effective_chat.id,
             message_id=update.effective_message.message_id
         )
-        
+
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = Q_SYSTEM_PROMPT.format(current_datetime=current_datetime, language=language)
         use_pro_model = bool(video_data or image_data_list or audio_data or youtube_urls) # Use Pro model if media is present
-        
+
         response = await call_gemini(
             system_prompt=system_prompt,
             user_content=query,
@@ -933,14 +936,14 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await processing_message.edit_text(
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else."
             )
-    
-    except Exception as e:
-        logger.error(f"Error in q_handler: {e}", exc_info=True)
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in q_handler: %s", e, exc_info=True)
         try:
             await update.effective_message.reply_text(
                 f"Error processing your question: {str(e)}"
             )
-        except Exception: # Inner exception during error reporting
+        except Exception:  # noqa: BLE001 # Inner exception during error reporting
             pass
 
 async def handle_media_group(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -968,11 +971,11 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_id = update.effective_user.id
-    
+
     # Check access control
     if not await check_access_control(update, "img"):
         return
-    
+
     # Check rate limiting
     if is_rate_limited(user_id):
         await update.effective_message.reply_text(
@@ -988,14 +991,14 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         prompt = ""
 
     image_urls = []
-    
+
     # Check for media group
     if update.effective_message.media_group_id:
         # This part is tricky as we need to gather all messages from the media group.
         # We'll rely on a caching mechanism that should be implemented in the main bot logic.
         # For now, we'll assume a helper function get_media_group_messages exists.
         # This is a placeholder for a more robust implementation.
-        logger.info(f"Handling media group with ID: {update.effective_message.media_group_id}")
+        logger.info("Handling media group with ID: {update.effective_message.media_group_id}")
         # A simple sleep might work for small groups if messages arrive close together.
         await asyncio.sleep(1)
         media_messages = context.bot_data.get(update.effective_message.media_group_id, [])
@@ -1022,7 +1025,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # We'll rely on a caching mechanism that should be implemented in the main bot logic.
             # For now, we'll assume a helper function get_media_group_messages exists.
             # This is a placeholder for a more robust implementation.
-            logger.info(f"Handling media group with ID: {replied_message.media_group_id}")
+            logger.info("Handling media group with ID: {replied_message.media_group_id}")
             # A simple sleep might work for small groups if messages arrive close together.
             await asyncio.sleep(1)
             media_messages = context.bot_data.get(replied_message.media_group_id, [])
@@ -1039,13 +1042,13 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             photo = replied_message.photo[-1]
             photo_file = await context.bot.get_file(photo.file_id)
             image_urls.append(photo_file.file_path) # Add the photo to the list
-        
+
         replied_text_content = replied_message.text or replied_message.caption or ""
         if replied_text_content:
-            if prompt: 
+            if prompt:
                 if not image_urls:
                     prompt = f"{replied_text_content}\n\n{prompt}"
-            else: 
+            else:
                 prompt = replied_text_content
 
     if not prompt:
@@ -1059,20 +1062,18 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     processing_message = await update.effective_message.reply_text(
         "Processing your image request... This may take a moment."
     )
-    
+
     try:
         # For now, we will use Gemini for all image generation as Vertex is not set up for multi-image input
-        logger.info(f"img_handler operating in Gemini mode for prompt: '{prompt}'")
-        system_prompt = "Generate an image based on the description."
+        logger.info("img_handler operating in Gemini mode for prompt: '%s'", prompt)
 
         if image_urls:
-            logger.info(f"Gemini: Processing image edit request with {len(image_urls)} image(s): '{prompt}'")
+            logger.info("Gemini: Processing image edit request with %d image(s): '%s'", len(image_urls), prompt)
         else:
-            logger.info(f"Gemini: Processing image generation request: '{prompt}'")
+            logger.info("Gemini: Processing image generation request: '%s'", prompt)
 
         try:
             image_data = await generate_image_with_gemini(
-                system_prompt=system_prompt,
                 prompt=prompt,
                 input_image_urls=image_urls
             )
@@ -1097,7 +1098,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                             caption = f"{base_caption} with prompt: \n```\n{truncated_prompt}\n```"
                     else:
                         caption = full_caption
-                    
+
                     await processing_message.edit_media(
                         media=InputMediaPhoto(
                             media=image_io,
@@ -1105,9 +1106,9 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                             parse_mode=ParseMode.MARKDOWN
                         )
                     )
-                    logger.info(f"Gemini: Image sent successfully by editing processing message with {GEMINI_IMAGE_MODEL}.")
-                except Exception as send_error:
-                    logger.error(f"Gemini: Error sending image via Telegram: {send_error}", exc_info=True)
+                    logger.info("Gemini: Image sent successfully by editing processing message with %s.", GEMINI_IMAGE_MODEL)
+                except Exception:  # noqa: BLE001
+                    logger.error("Gemini: Error sending image via Telegram", exc_info=True)
             else:
                 logger.warning("Gemini: Image generation failed (image_data is None).")
                 if image_urls:
@@ -1121,17 +1122,21 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                         "1. Simpler prompt\n2. More specific details\n3. Try again later"
                     )
         except ImageGenerationError as e:
-            logger.error(f"ImageGenerationError in img_handler: {e}")
+            logger.error("ImageGenerationError in img_handler: {e}")
             await processing_message.edit_text(f"Image generation failed: {e}")
 
         language = languages.get(alpha_2=langid.classify(message_text)[0]).name
         username = "Anonymous"
         if update.effective_sender:
             sender = update.effective_message.from_user
-            if sender.full_name: username = sender.full_name
-            elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
-            elif sender.first_name: username = sender.first_name
-            elif sender.username: username = sender.username
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name and sender.last_name:
+                username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
 
         await queue_message_insert(
             user_id=update.effective_message.from_user.id,
@@ -1144,13 +1149,13 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             message_id=update.effective_message.message_id
         )
 
-    except Exception as e:
-        logger.error(f"Error in img_handler: {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in img_handler: %s", e, exc_info=True)
         error_message_for_user = "Sorry, an unexpected error occurred while processing your image request."
         try:
             await processing_message.edit_text(error_message_for_user)
         except Exception as edit_err:
-            logger.error(f"Failed to edit processing message with error: {edit_err}", exc_info=True)
+            logger.error("Failed to edit processing message with error: %s", edit_err, exc_info=True)
 
 
 async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1166,11 +1171,11 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_id = update.effective_user.id
-    
+
     # Check access control
     if not await check_access_control(update, "vid"):
         return
-    
+
     # Rate Limiting
     if is_rate_limited(user_id):
         await update.effective_message.reply_text(
@@ -1178,7 +1183,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    logger.info(f"Received /vid command from user {user_id}")
+    logger.info("Received /vid command from user %s", user_id)
 
     # Prompt Extraction
     message_text = update.effective_message.text or ""
@@ -1192,24 +1197,24 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     if replied_message:
         if replied_message.photo:
-            logger.info(f"Replying to photo for /vid command.")
+            logger.info("Replying to photo for /vid command.")
             photo = replied_message.photo[-1]  # Get the largest photo
             try:
                 photo_file = await context.bot.get_file(photo.file_id)
                 image_data_bytes = await download_media(photo_file.file_path)
                 if image_data_bytes:
-                    logger.info(f"Image downloaded successfully for /vid command.")
+                    logger.info("Image downloaded successfully for /vid command.")
                 else:
                     logger.warning("Failed to download image for /vid.")
-            except Exception as e:
-                logger.error(f"Error downloading image for /vid: {e}", exc_info=True)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Error downloading image for /vid: %s", e, exc_info=True)
                 await update.effective_message.reply_text("Error downloading image. Please try again.")
                 return
-        
+
         # Use caption as prompt if no command prompt and caption exists
         if not prompt and replied_message.caption:
             prompt = replied_message.caption.strip()
-            logger.info(f"Using caption from replied message as prompt: '{prompt}'")
+            logger.info("Using caption from replied message as prompt: '{prompt}'")
 
 
     # Default Prompt or Usage Message
@@ -1222,7 +1227,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     elif not prompt and image_data_bytes:
         prompt = "Generate a video from this image."
-        logger.info(f"Using default prompt for image-only /vid: '{prompt}'")
+        logger.info("Using default prompt for image-only /vid: '{prompt}'")
 
     processing_message = await update.effective_message.reply_text(
         "Processing video request... This may take a few minutes."
@@ -1230,14 +1235,18 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     try:
         language = languages.get(alpha_2=langid.classify(message_text)[0]).name
-        
+
         username = "Anonymous"
         if update.effective_sender: # Should be update.effective_message.from_user
             sender = update.effective_message.from_user
-            if sender.full_name: username = sender.full_name
-            elif sender.first_name and sender.last_name: username = f"{sender.first_name} {sender.last_name}"
-            elif sender.first_name: username = sender.first_name
-            elif sender.username: username = sender.username
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name and sender.last_name:
+                username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
 
         await queue_message_insert(
             user_id=update.effective_message.from_user.id, # Use from_user here
@@ -1251,16 +1260,15 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
 
         # Call Video Generation
-        logger.info(f"Calling generate_video_with_veo with prompt: '{prompt}' and image_data: {'present' if image_data_bytes else 'absent'}")
+        logger.info("Calling generate_video_with_veo with prompt: '%s' and image_data: '%s'", prompt, 'present' if image_data_bytes else 'absent')
         video_bytes, video_mime_type = await generate_video_with_veo(
-            system_prompt="You are a helpful video generation assistant.",
             user_prompt=prompt,
             image_data=image_data_bytes
         )
 
         # Response Handling
         if video_bytes:
-            logger.info(f"Video generated successfully. MIME type: {video_mime_type}, Size: {len(video_bytes)} bytes")
+            logger.info("Video generated successfully. MIME type: %s, Size: %d bytes", video_mime_type, len(video_bytes))
             video_file = BytesIO(video_bytes)
             video_file.name = 'generated_video.mp4' # Suggested name
 
@@ -1276,7 +1284,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 await processing_message.delete()
                 logger.info("Video sent successfully and processing message deleted.")
             except Exception as e_telegram:
-                logger.error(f"Error sending video via Telegram: {e_telegram}", exc_info=True)
+                logger.error("Error sending video via Telegram: %s", e_telegram, exc_info=True)
                 await processing_message.edit_text(
                     "Sorry, I generated the video but couldn't send it via Telegram. It might be too large or in an unsupported format."
                 )
@@ -1286,20 +1294,20 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "Sorry, I couldn't generate the video. Please try a different prompt or image. The model might have limitations or be unavailable."
             )
 
-    except Exception as e:
-        logger.error(f"Error in vid_handler: {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in vid_handler: %s", e, exc_info=True)
         error_message_user = "Sorry, an unexpected error occurred while generating your video. Please try again later."
         if "timeout" in str(e).lower():
             error_message_user = "The video generation timed out. Please try a shorter prompt or a smaller image."
         elif "unsupported" in str(e).lower():
-             error_message_user = "The video generation failed due to an unsupported format or feature. Please check your input."
+            error_message_user = "The video generation failed due to an unsupported format or feature. Please check your input."
         try:
             await processing_message.edit_text(error_message_user)
-        except Exception: # If editing fails, just log
+        except Exception:  # noqa: BLE001 # If editing fails, just log
             logger.error("Failed to edit processing message with error.", exc_info=True)
 
 
-async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
     """Handle the /start command.
 
     Args:
@@ -1312,7 +1320,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # Check access control
     if not await check_access_control(update, "start"):
         return
-    
+
     welcome_message = (
         "👋 Hello! I'm TelegramGroupHelperBot, your AI assistant for this chat.\n\n"
         "I can help with the following commands:\n"
@@ -1327,11 +1335,11 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "• /help - Show this help message\n\n"
         "Just type one of these commands to get started!"
     )
-    
+
     await update.effective_message.reply_text(welcome_message)
 
 
-async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
     """Handle the /paintme command.
 
     Fetches user's chat history, generates an image prompt with Gemini,
@@ -1369,7 +1377,6 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             user_id=user_id,
             limit=USER_HISTORY_MESSAGE_COUNT 
         )
-        
 
         if not user_messages or len(user_messages) < 5: # Need a few messages at least
             await processing_message.edit_text(
@@ -1381,7 +1388,7 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         formatted_history = "User's recent messages in the group chat:\n\n"
         for msg in user_messages:
             formatted_history += f"- \"{msg.text}\"\n"
-        
+
         # 3. Generate image prompt with Gemini
         image_prompt = await call_gemini(
             system_prompt=system_prompt, # Use imported constant
@@ -1394,16 +1401,16 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 "I couldn't come up with an image idea for you at this time. Please try again later."
             )
             return
-        
+
         await processing_message.edit_text(
             f"Generated image prompt: \"{image_prompt}\". Now creating your masterpiece..."
         )
 
         # 4. Generate Image
         if USE_VERTEX_IMAGE:
-            logger.info(f"{'portrait' if isPortrait else 'paint'}me_handler: Using Vertex AI for image generation with prompt: '{image_prompt}'")
+            logger.info("{'portrait' if isPortrait else 'paint'}me_handler: Using Vertex AI for image generation with prompt: '{image_prompt}'")
             images_data_list = await generate_image_with_vertex(prompt=image_prompt, number_of_images=1) # Generate 1 for this command
-            
+
             if images_data_list and images_data_list[0]:
                 image_data = images_data_list[0]
                 image_io = BytesIO(image_data)
@@ -1414,15 +1421,13 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 await processing_message.delete()
             else:
-                logger.error(f"{'portrait' if isPortrait else 'paint'}me_handler: Vertex AI image generation failed or returned no image.")
+                logger.error("{'portrait' if isPortrait else 'paint'}me_handler: Vertex AI image generation failed or returned no image.")
                 await processing_message.edit_text(f"Sorry, {VERTEX_IMAGE_MODEL} couldn't {reply_text_part}. Please try again.")
         
         else: # Use Gemini for image generation
-            logger.info(f"{'portrait' if isPortrait else 'paint'}me_handler: Using Gemini for image generation with prompt: '{image_prompt}'")
+            logger.info("{'portrait' if isPortrait else 'paint'}me_handler: Using Gemini for image generation with prompt: '{image_prompt}'")
             # System prompt for Gemini image generation can be simple
-            gemini_image_system_prompt = "Generate an image based on the following description."
             image_data = await generate_image_with_gemini(
-                system_prompt=gemini_image_system_prompt,
                 prompt=image_prompt
             )
 
@@ -1435,18 +1440,21 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 )
                 await processing_message.delete()
             else:
-                logger.warning(f"{'portrait' if isPortrait else 'paint'}me_handler: Gemini image generation failed.")
+                logger.warning("{'portrait' if isPortrait else 'paint'}me_handler: Gemini image generation failed.")
                 await processing_message.edit_text(f"Sorry, Gemini couldn't {reply_text_part}. Please try again.")
-        
+
         # Log the command usage
         language = languages.get(alpha_2=langid.classify(formatted_history)[0]).name # Use history for language context
         username = "Anonymous"
         if update.effective_message.from_user:
             sender = update.effective_message.from_user
-            if sender.full_name: username = sender.full_name
-            elif sender.first_name: username = sender.first_name
-            elif sender.username: username = sender.username
-        
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
+
         await queue_message_insert(
             user_id=user_id,
             username=username,
@@ -1457,17 +1465,17 @@ async def paintme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             message_id=update.effective_message.message_id
         )
 
-    except Exception as e:
-        logger.error(f"Error in paintme_handler: {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in paintme_handler: %s", e, exc_info=True)
         try:
             await processing_message.edit_text(
                 f"Sorry, an unexpected error occurred while {'creating your portrait' if isPortrait else 'painting your picture'}: {str(e)}"
             )
-        except Exception: 
+        except Exception:  # noqa: BLE001
             pass
 
 
-async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
     """Handle the /profileme command.
 
     Args:
@@ -1539,17 +1547,17 @@ async def profileme_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 "I couldn't generate a profile at this time. Please try again later."
             )
 
-    except Exception as e:
-        logger.error(f"Error in profileme_handler: {e}", exc_info=True)
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in profileme_handler: %s", e, exc_info=True)
         try:
             await processing_message.edit_text(
                 f"Sorry, an error occurred while generating your profile: {str(e)}"
             )
-        except Exception: # Inner exception during error reporting
+        except Exception:  # noqa: BLE001 # Inner exception during error reporting
             pass
 
 
-async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
     """Handle the /help command.
 
     Args:
@@ -1562,7 +1570,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Check access control
     if not await check_access_control(update, "help"):
         return
-    
+
     help_text = """
     *TelegramGroupHelperBot Commands*
 
@@ -1602,7 +1610,7 @@ async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
 
-async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:  # noqa: ARG001
     """Handle the /support command.
 
     Args:
@@ -1615,18 +1623,18 @@ async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     # Check access control
     if not await check_access_control(update, "support"):
         return
-    
+
     # Create the support message with inline keyboard
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    
+
     # Create inline keyboard with Ko-fi link button
     keyboard = [
         [InlineKeyboardButton("投喂", url=SUPPORT_LINK)]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
+
     await update.effective_message.reply_text(
         SUPPORT_MESSAGE,
         reply_markup=reply_markup,
         parse_mode=ParseMode.MARKDOWN
-    ) 
+    )
