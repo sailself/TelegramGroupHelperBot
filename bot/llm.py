@@ -843,7 +843,7 @@ async def generate_image_with_gemini(
     Args:
         system_prompt: The system prompt for the model.
         prompt: The user's description of the desired image.
-        input_image_urls: Optional list of URLs to images to edit (up to 2).
+        input_image_urls: Optional list of URLs to images to edit (up to 3).
         
     Returns:
         The generated image as bytes, or None if generation failed.
@@ -855,9 +855,9 @@ async def generate_image_with_gemini(
         
         # If there are input images, include them in the request
         if input_image_urls:
-            if len(input_image_urls) > 2:
-                logger.warning(f"Too many images provided ({len(input_image_urls)}), only the first 2 will be used.")
-                input_image_urls = input_image_urls[:2]
+            if len(input_image_urls) > 3:
+                logger.warning(f"Too many images provided ({len(input_image_urls)}), only the first 3 will be used.")
+                input_image_urls = input_image_urls[:3]
 
             image_data_list = []
             for url in input_image_urls:
@@ -871,12 +871,13 @@ async def generate_image_with_gemini(
             if image_data_list:
                 model = GEMINI_IMAGE_MODEL
                 config = types.GenerateContentConfig(
-                    response_modalities=['TEXT', 'IMAGE'],
+                    system_instruction="Edit the images based on the prompt. CRITICAL: response be an image, NOT TEXT.",
+                    response_modalities=['IMAGE'],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings
                 )
                 
-                contents = [f"Edit this image: {prompt}"]
+                contents = [f"Edit images based on this prompt: {prompt}"]
                 for image_data in image_data_list:
                     mime_type = detect_mime_type(image_data)
                     contents.append(types.Part.from_bytes(data=image_data, mime_type=mime_type))
@@ -894,10 +895,12 @@ async def generate_image_with_gemini(
         if not input_image_urls:
             # Text-only image generation
             model = GEMINI_IMAGE_MODEL
-            # Prepend a specific instruction to the prompt for text-only image generation
-            image_generation_prompt = f"Generate an image of {prompt}"
+            # Prepend a specific instruction to the prompt for text-only image generation 
+            # and specify the model to generate an image, to avoid the model returns a text-only response.
+            image_generation_prompt = prompt
             config = types.GenerateContentConfig(
-                response_modalities=['TEXT', 'IMAGE'],
+                system_instruction="Generate an image based on the prompt. CRITICAL: response be an image, NOT TEXT.",
+                response_modalities=['IMAGE'],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings
             )
@@ -976,11 +979,11 @@ async def generate_image_with_gemini(
                     text_response_parts.append(part.text)
         
         if not image_found:
-            full_text_response = " ".join(text_response_parts)
-            logger.error(f"No valid image data found in response. Full text response: {full_text_response}")
-            raise ImageGenerationError(f"Model returned a text response instead of an image: {full_text_response}")
+            logger.error(f"No valid image data found in response. Full text response: {text_response_parts}")
+            raise ImageGenerationError(f"Model returned a text response instead of an image: {text_response_parts}")
+        else:
+            logger.info(f"Valid image data found in response. With text response: {text_response_parts}")
 
-        logger.error("No valid image data found in response")
         return None
             
     except Exception as e:
