@@ -207,7 +207,7 @@ async def call_gemini(
             )
         elif audio_data and audio_mime_type:
             logger.info(
-                "Processing with provided audio data (MIME: {audio_mime_type})."
+                "Processing with provided audio data (MIME: %s).", audio_mime_type
             )
             return await call_gemini_with_media(
                 system_prompt=system_prompt,
@@ -220,7 +220,7 @@ async def call_gemini(
                 use_pro_model=use_pro_model,
             )
         elif image_data_list:
-            logger.info("Processing with {len(image_data_list)} provided image(s).")
+            logger.info("Processing with %d provided image(s).", len(image_data_list))
             return await call_gemini_with_media(
                 system_prompt=system_prompt,
                 user_content=user_content,
@@ -231,7 +231,7 @@ async def call_gemini(
                 use_pro_model=use_pro_model,
             )
         elif image_url:
-            logger.info("Processing with single image URL: {image_url}")
+            logger.info("Processing with single image URL: %s", image_url)
             media_data = await download_media(image_url)
             if not media_data:
                 logger.error(
@@ -250,7 +250,7 @@ async def call_gemini(
                     use_pro_model=use_pro_model,
                 )
         elif youtube_urls and len(youtube_urls) > 0:
-            logger.info("Processing with {len(youtube_urls)} YouTube video(s).")
+            logger.info("Processing with %d YouTube video(s).", len(youtube_urls))
             return await call_gemini_with_media(
                 system_prompt=system_prompt,
                 user_content=user_content,
@@ -297,9 +297,9 @@ async def call_gemini(
         )
 
         # Log the response details
-        logger.info("Response received. Has text: {hasattr(response, 'text')}")
+        logger.info("Response received. Has text: %s", hasattr(response, 'text'))
         if hasattr(response, "text") and response.text:
-            logger.info("Response text (first 100 chars): {response.text[:100]}...")
+            logger.info("Response text (first 100 chars): %s...", response.text[:100])
 
         # Extract the text from the response
         return response.text.strip() if response.text else "No response generated."
@@ -391,7 +391,7 @@ async def call_gemini_with_media(
         contents = [user_content]
 
         if video_data and video_mime_type:
-            logger.info("Processing with video data, MIME type: {video_mime_type}.")
+            logger.info("Processing with video data, MIME type: %s.", video_mime_type)
             if image_data_list and any(image_data_list):  # check if list is not empty
                 logger.warning(
                     "Video data provided; image_data_list will be ignored as video takes precedence."
@@ -402,7 +402,7 @@ async def call_gemini_with_media(
                 )
             )
         elif audio_data and audio_mime_type:
-            logger.info("Processing with audio data, MIME type: {audio_mime_type}.")
+            logger.info("Processing with audio data, MIME type: %s.", audio_mime_type)
             if image_data_list and any(image_data_list):  # check if list is not empty
                 logger.warning(
                     "Audio data provided; image_data_list will be ignored as audio takes precedence."
@@ -411,17 +411,17 @@ async def call_gemini_with_media(
                 types.Part.from_bytes(data=audio_data, mime_type=audio_mime_type)
             )
         elif image_data_list and any(image_data_list):  # check if list is not empty
-            logger.info("Processing with {len(image_data_list)} image(s).")
+            logger.info("Processing with %d image(s).", len(image_data_list))
             for img_data in image_data_list:
                 mime_type = detect_mime_type(img_data)
                 logger.info(
-                    "Detected image MIME type: {mime_type} for one of the images."
+                    "Detected image MIME type: %s for one of the images.", mime_type
                 )
                 contents.append(
                     types.Part.from_bytes(data=img_data, mime_type=mime_type)
                 )
         elif youtube_urls and len(youtube_urls) > 0:
-            logger.info("Processing with {len(youtube_urls)} YouTube video(s).")
+            logger.info("Processing with %d YouTube video(s).", len(youtube_urls))
             for url in youtube_urls:
                 contents.append(types.Part(file_data=types.FileData(file_uri=url)))
 
@@ -455,7 +455,7 @@ async def call_gemini_with_media(
         )
 
     except Exception as e:  # noqa: BLE001
-        logger.error("Error calling Gemini Vision with media: {e}", exc_info=True)
+        logger.error("Error calling Gemini Vision with media: %s", e, exc_info=True)
         return f"Error processing media (image/video): {str(e)}"
 
 
@@ -491,7 +491,7 @@ async def extract_and_process_image_from_text(text_response: str) -> Optional[by
             ]
         ):
             logger.warning(
-                "Response appears to be an explanation rather than image data: {text_response[:200]}..."
+                "Response appears to be an explanation rather than image data: %s...", text_response[:200]
             )
             return None
 
@@ -532,13 +532,13 @@ async def extract_and_process_image_from_text(text_response: str) -> Optional[by
             invalid_chars = set(c for c in base64_data if c not in valid_chars)
 
             if invalid_chars:
-                logger.warning("Found invalid base64 characters: {invalid_chars}")
+                logger.warning("Found invalid base64 characters: %s", invalid_chars)
                 base64_data = "".join(c for c in base64_data if c in valid_chars)
 
             # Log statistics
-            logger.info("Base64 data length: {len(base64_data)}")
+            logger.info("Base64 data length: %d", len(base64_data))
             logger.info(
-                "Base64 data looks valid: {all(c in valid_chars for c in base64_data)}"
+                "Base64 data looks valid: %s", all(c in valid_chars for c in base64_data)
             )
 
         # Remove any non-base64 characters
@@ -774,9 +774,9 @@ async def stream_gemini(
         user_content += f"\n\nPlease reply in {response_language}."
 
     # Log the complete prompts
-    logger.info("Stream - System prompt: {system_prompt}")
-    logger.info("Stream - User content: {user_content}")
-    logger.info("Stream - Using search grounding: {use_search_grounding}")
+    logger.info("Stream - System prompt: %s", system_prompt)
+    logger.info("Stream - User content: %s", user_content)
+    logger.info("Stream - Using search grounding: %s", use_search_grounding)
 
     # Use threading to avoid blocking
     async def stream_worker() -> None:
@@ -807,7 +807,7 @@ async def stream_gemini(
             model = GEMINI_MODEL
             if use_pro_model:
                 model = GEMINI_PRO_MODEL
-            logger.info("Stream - Sending message to model: {model}")
+            logger.info("Stream - Sending message to model: %s", model)
 
             # For streaming, we need to handle the generate_content_stream method
             stream_response = (
@@ -824,7 +824,7 @@ async def stream_gemini(
                     full_text += chunk.text
                     await queue.put(full_text)
                     logger.info(
-                        "Stream - Chunk received, length so far: {len(full_text)}"
+                        "Stream - Chunk received, length so far: %d", len(full_text)
                     )
 
             if not full_text:
@@ -836,7 +836,7 @@ async def stream_gemini(
             logger.info("Stream - Completed streaming")
 
         except Exception as e:  # noqa: BLE001
-            logger.error("Error in stream_worker: {e}", exc_info=True)
+            logger.error("Error in stream_worker: %s", e, exc_info=True)
             # Fall back to non-grounding streaming if grounding fails (text-only scenario)
             if use_search_grounding:  # This implies no media due to logic above
                 logger.info("Falling back to non-grounding text-only streaming")
@@ -883,7 +883,7 @@ async def test_gemini_vision(image_url: str) -> None:
         image_url: The URL of an image to test with.
     """
     try:
-        logger.info("Testing Gemini Vision API with image: {image_url}")
+        logger.info("Testing Gemini Vision API with image: %s", image_url)
 
         # Basic prompt for image analysis
         system_prompt = "You are a helpful assistant that can analyze images."
@@ -895,12 +895,12 @@ async def test_gemini_vision(image_url: str) -> None:
         )
 
         # Log and print the response
-        logger.info("Test response: {response}")
+        logger.info("Test response: %s", response)
         print(f"Test response: {response}")
 
         return response
     except Exception as e:  # noqa: BLE001
-        logger.error("Error in test_gemini_vision: {e}", exc_info=True)
+        logger.error("Error in test_gemini_vision: %s", e, exc_info=True)
         print(f"Error testing Gemini Vision: {str(e)}")
         return f"Error: {str(e)}"
 

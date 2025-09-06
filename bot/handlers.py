@@ -813,7 +813,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if target_message_for_media:
             # Video processing (takes precedence)
             if target_message_for_media.video:
-                logger.info("Q handler processing video: {target_message_for_media.video.file_id}")
+                logger.info("Q handler processing video: %s", target_message_for_media.video.file_id)
                 try:
                     video_file = await context.bot.get_file(target_message_for_media.video.file_id)
                     dl_video_data = await download_media(video_file.file_path)
@@ -831,7 +831,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             if not video_data:
                 audio = target_message_for_media.audio if target_message_for_media.audio else target_message_for_media.voice
                 if audio:
-                    logger.info("Q handler processing audio: {audio.file_id}")
+                    logger.info("Q handler processing audio: %s", audio.file_id)
                     try:
                         audio_file = await context.bot.get_file(audio.file_id)
                         dl_audio_data = await download_media(audio_file.file_path)
@@ -839,24 +839,46 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                             audio_data = dl_audio_data
                             audio_mime_type = audio.mime_type
                             image_data_list = [] # Clear images
-                            logger.info("Audio {audio.file_id} downloaded for /q. MIME: {audio_mime_type}")
+                            logger.info("Audio %s downloaded for /q. MIME: %s", audio.file_id, audio_mime_type)
                         else:
-                            logger.error("Failed to download audio {audio.file_id} for /q.")
+                            logger.error("Failed to download audio %s for /q.", audio.file_id)
                     except Exception:  # noqa: BLE001
                         logger.error("Error processing audio for /q", exc_info=True)
 
             # Photo processing (only if video and audio was not processed)
-            if not video_data and not audio_data and target_message_for_media.photo:
-                # Simplified to handle only the single photo from the target message
-                photo_size = target_message_for_media.photo[-1]
-                try:
-                    file = await context.bot.get_file(photo_size.file_id)
-                    img_bytes = await download_media(file.file_path)
-                    if img_bytes:
-                        image_data_list.append(img_bytes)
-                        logger.info("Added single image to /q list from message {target_message_for_media.message_id}.")
-                except Exception as e:  # noqa: BLE001
-                    logger.error("Error downloading single image for /q: {e}", exc_info=True)
+            if not video_data and not audio_data:
+                # Check for media group first
+                if target_message_for_media.media_group_id:
+                    logger.info("Q handler: Handling media group with ID: %s", target_message_for_media.media_group_id)
+                    # A simple sleep might work for small groups if messages arrive close together.
+                    await asyncio.sleep(1)
+                    media_messages = context.bot_data.get(target_message_for_media.media_group_id, [])
+                    # The current message might not be in bot_data yet, so we add it.
+                    if target_message_for_media not in media_messages:
+                        media_messages.append(target_message_for_media)
+
+                    for msg in media_messages:
+                        if msg.photo:
+                            photo = msg.photo[-1]
+                            try:
+                                photo_file = await context.bot.get_file(photo.file_id)
+                                img_bytes = await download_media(photo_file.file_path)
+                                if img_bytes:
+                                    image_data_list.append(img_bytes)
+                                    logger.info("Added image from media group to /q list from message %s.", msg.message_id)
+                            except Exception as e:  # noqa: BLE001
+                                logger.error("Error downloading image from media group for /q: %s", e, exc_info=True)
+                elif target_message_for_media.photo:
+                    # Handle single photo
+                    photo_size = target_message_for_media.photo[-1]
+                    try:
+                        file = await context.bot.get_file(photo_size.file_id)
+                        img_bytes = await download_media(file.file_path)
+                        if img_bytes:
+                            image_data_list.append(img_bytes)
+                            logger.info("Added single image to /q list from message %s.", target_message_for_media.message_id)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("Error downloading single image for /q: %s", e, exc_info=True)
 
         if not query and not image_data_list and not video_data and not audio_data:
             await update.effective_message.reply_text(
@@ -998,7 +1020,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         # We'll rely on a caching mechanism that should be implemented in the main bot logic.
         # For now, we'll assume a helper function get_media_group_messages exists.
         # This is a placeholder for a more robust implementation.
-        logger.info("Handling media group with ID: {update.effective_message.media_group_id}")
+        logger.info("Handling media group with ID: %s", update.effective_message.media_group_id)
         # A simple sleep might work for small groups if messages arrive close together.
         await asyncio.sleep(1)
         media_messages = context.bot_data.get(update.effective_message.media_group_id, [])
@@ -1025,7 +1047,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             # We'll rely on a caching mechanism that should be implemented in the main bot logic.
             # For now, we'll assume a helper function get_media_group_messages exists.
             # This is a placeholder for a more robust implementation.
-            logger.info("Handling media group with ID: {replied_message.media_group_id}")
+            logger.info("Handling media group with ID: %s", replied_message.media_group_id)
             # A simple sleep might work for small groups if messages arrive close together.
             await asyncio.sleep(1)
             media_messages = context.bot_data.get(replied_message.media_group_id, [])
@@ -1064,27 +1086,49 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
     try:
-        # For now, we will use Gemini for all image generation as Vertex is not set up for multi-image input
-        logger.info("img_handler operating in Gemini mode for prompt: '%s'", prompt)
-
-        if image_urls:
-            logger.info("Gemini: Processing image edit request with %d image(s): '%s'", len(image_urls), prompt)
+        # Check if we should use Vertex AI for text-only image generation
+        if USE_VERTEX_IMAGE and not image_urls:
+            # Use Vertex AI for text-only image generation
+            logger.info("img_handler operating in Vertex AI mode for text-only prompt: '%s'", prompt)
+            
+            try:
+                images_data_list = await generate_image_with_vertex(prompt=prompt, number_of_images=1)
+                image_data = images_data_list[0] if images_data_list else None
+            except Exception as vertex_error:
+                logger.error("Vertex AI image generation failed: %s", vertex_error, exc_info=True)
+                # Fallback to Gemini if Vertex fails
+                logger.info("Falling back to Gemini for image generation")
+                image_data = await generate_image_with_gemini(
+                    prompt=prompt,
+                    input_image_urls=image_urls
+                )
         else:
-            logger.info("Gemini: Processing image generation request: '%s'", prompt)
+            # Use Gemini for image editing (with input images) or when Vertex is disabled
+            logger.info("img_handler operating in Gemini mode for prompt: '%s'", prompt)
 
-        try:
+            if image_urls:
+                logger.info("Gemini: Processing image edit request with %d image(s): '%s'", len(image_urls), prompt)
+            else:
+                logger.info("Gemini: Processing image generation request: '%s'", prompt)
+
             image_data = await generate_image_with_gemini(
                 prompt=prompt,
                 input_image_urls=image_urls
             )
 
+        try:
+
             if image_data:
-                logger.info("Gemini: Image data received. Attempting to send.")
+                # Determine which model was used based on the logic above
+                model_used = VERTEX_IMAGE_MODEL if (USE_VERTEX_IMAGE and not image_urls) else GEMINI_IMAGE_MODEL
+                service_name = "Vertex AI" if (USE_VERTEX_IMAGE and not image_urls) else "Gemini"
+                
+                logger.info("%s: Image data received. Attempting to send.", service_name)
                 try:
                     image_io = BytesIO(image_data)
-                    image_io.name = 'gemini_generated_image.jpg'
+                    image_io.name = f'{service_name.lower()}_generated_image.jpg'
                     # Check if caption would be too long (> 1000 characters)
-                    base_caption = f"Generated by *{GEMINI_IMAGE_MODEL}*"
+                    base_caption = f"Generated by *{model_used}*"
                     full_caption = f"{base_caption} with prompt: \n```\n{prompt}\n```"
                     
                     if len(full_caption) > 1000:
@@ -1106,23 +1150,25 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                             parse_mode=ParseMode.MARKDOWN
                         )
                     )
-                    logger.info("Gemini: Image sent successfully by editing processing message with %s.", GEMINI_IMAGE_MODEL)
+                    logger.info("%s: Image sent successfully by editing processing message with %s.", service_name, model_used)
                 except Exception:  # noqa: BLE001
-                    logger.error("Gemini: Error sending image via Telegram", exc_info=True)
+                    logger.error("%s: Error sending image via Telegram", service_name, exc_info=True)
             else:
-                logger.warning("Gemini: Image generation failed (image_data is None).")
+                # Determine which service was attempted for error messages
+                service_name = "Vertex AI" if (USE_VERTEX_IMAGE and not image_urls) else "Gemini"
+                logger.warning("%s: Image generation failed (image_data is None).", service_name)
                 if image_urls:
                     await processing_message.edit_text(
-                        "I couldn't edit the image with Gemini. Please try:\n"
+                        f"I couldn't edit the image with {service_name}. Please try:\n"
                         "1. Simpler edit description\n2. More specific details\n3. Different edit type or try later"
                     )
                 else:
                     await processing_message.edit_text(
-                        "I couldn't generate an image with Gemini. Please try:\n"
+                        f"I couldn't generate an image with {service_name}. Please try:\n"
                         "1. Simpler prompt\n2. More specific details\n3. Try again later"
                     )
         except ImageGenerationError as e:
-            logger.error("ImageGenerationError in img_handler: {e}")
+            logger.error("ImageGenerationError in img_handler: %s", e)
             await processing_message.edit_text(f"Image generation failed: {e}")
 
         language = languages.get(alpha_2=langid.classify(message_text)[0]).name
