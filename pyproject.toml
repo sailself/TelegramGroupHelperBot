@@ -30,9 +30,13 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.ruff]
 select = ["E", "F", "B", "I"]
+ignore = ["E501", "E203", "E731"]  # Ignore line too long, whitespace before ':', and lambda assignment warnings
 line-length = 100
 target-version = "py311"
 fix = true
+
+[tool.pylint.messages_control]
+disable = ["C0302"]  # Disable too-many-lines warning
 
 [tool.mypy]
 python_version = "3.11"
