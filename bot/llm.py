@@ -1043,7 +1043,7 @@ async def generate_image_with_gemini(
                         # Upload to cwd.pw if enabled and API key is available
                         if upload_to_cwd and CWD_PW_API_KEY:
                             try:
-                                from bot.cwd_uploader import upload_image_bytes_to_cwd
+                                from bot.tools.cwd_uploader import upload_image_bytes_to_cwd
 
                                 cwd_url = await upload_image_bytes_to_cwd(
                                     image_bytes=image_bytes,
@@ -1349,7 +1349,7 @@ async def generate_image_with_vertex(
                             # Upload to cwd.pw if enabled and API key is available
                             if upload_to_cwd and CWD_PW_API_KEY:
                                 try:
-                                    from bot.cwd_uploader import (
+                                    from bot.tools.cwd_uploader import (
                                         upload_image_bytes_to_cwd,
                                     )
 

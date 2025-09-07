@@ -55,6 +55,7 @@ from bot.llm import (
     generate_video_with_veo,
     ImageGenerationError,
 )
+from bot.tools.telegraph_extractor import extract_telegraph_content
 
 # Configure logging
 logging.basicConfig(
@@ -647,6 +648,215 @@ def extract_youtube_urls(text: str, max_urls: int = 10):
     return new_text, urls
 
 
+async def extract_telegraph_urls_and_content(
+    text: str, message_entities=None, max_urls: int = 5
+):
+    """Extract up to max_urls Telegraph URLs from the given text and message entities, replace them with their content.
+    Returns (modified_text, list_of_extracted_content).
+
+    Args:
+        text: The message text
+        message_entities: Telegram message entities (for embedded links)
+        max_urls: Maximum number of URLs to process
+    """
+    if not text:
+        return text, []
+
+    extracted_contents = []
+    new_text = text
+    count = 0
+    telegraph_urls = []
+
+    # First, extract URLs from message entities (embedded links)
+    if message_entities:
+        for entity in message_entities:
+            if count >= max_urls:
+                break
+
+            # Check for URL entities or text_link entities
+            if entity.type in ["url", "text_link"]:
+                url = None
+                if entity.type == "url":
+                    # Extract URL from the text using entity offset and length
+                    url = text[entity.offset : entity.offset + entity.length]
+                elif entity.type == "text_link":
+                    # Use the URL from the entity
+                    url = entity.url
+
+                # Check if it's a Telegraph URL
+                if url and "telegra.ph" in url:
+                    telegraph_urls.append(
+                        {
+                            "url": url,
+                            "offset": entity.offset,
+                            "length": entity.length,
+                            "is_entity": True,
+                        }
+                    )
+                    count += 1
+
+    # Then, extract plain text URLs using regex
+    pattern = r"(https?://telegra\.ph/[^\s]+)"
+    matches = list(re.finditer(pattern, text))
+
+    for match in matches:
+        if count >= max_urls:
+            break
+
+        telegraph_url = match.group(1)
+        # Check if this URL is already found in entities to avoid duplicates
+        if not any(existing["url"] == telegraph_url for existing in telegraph_urls):
+            telegraph_urls.append(
+                {
+                    "url": telegraph_url,
+                    "offset": match.start(),
+                    "length": match.end() - match.start(),
+                    "is_entity": False,
+                }
+            )
+            count += 1
+
+    # Process Telegraph URLs (in reverse order to maintain text indices)
+    for telegraph_info in reversed(sorted(telegraph_urls, key=lambda x: x["offset"])):
+        telegraph_url = telegraph_info["url"]
+        try:
+            logger.info("Extracting content from Telegraph URL: %s", telegraph_url)
+            content_data = extract_telegraph_content(telegraph_url)
+
+            # Format the extracted content
+            content_text = content_data.get("text_content", "")
+            image_urls = content_data.get("image_urls", [])
+            video_urls = content_data.get("video_urls", [])
+
+            formatted_content = f"\n\n--- Telegraph Content ---\n{content_text}"
+            if image_urls:
+                formatted_content += (
+                    f"\n\nImages in Telegraph page: {len(image_urls)} images"
+                )
+                # Note: We could download these images too, but for now just mention them
+            if video_urls:
+                formatted_content += (
+                    f"\nVideos in Telegraph page: {len(video_urls)} videos"
+                )
+            formatted_content += "\n--- End Telegraph Content ---\n\n"
+
+            extracted_contents.insert(
+                0,
+                {
+                    "url": telegraph_url,
+                    "text_content": content_text,
+                    "image_urls": image_urls,
+                    "video_urls": video_urls,
+                    "formatted_content": formatted_content,
+                },
+            )
+
+            # Replace the URL in text with the content
+            start = telegraph_info["offset"]
+            end = start + telegraph_info["length"]
+            new_text = new_text[:start] + formatted_content + new_text[end:]
+
+        except Exception as e:
+            logger.error(
+                "Error extracting Telegraph content from %s: %s",
+                telegraph_url,
+                e,
+            )
+            # Keep the original URL if extraction fails
+            extracted_contents.insert(
+                0,
+                {
+                    "url": telegraph_url,
+                    "text_content": f"[Telegraph content extraction failed for {telegraph_url}]",
+                    "image_urls": [],
+                    "video_urls": [],
+                    "formatted_content": f"\n[Telegraph content extraction failed for {telegraph_url}]\n",
+                },
+            )
+
+    return new_text, extracted_contents
+
+
+async def download_telegraph_media(
+    telegraph_contents: List[dict], max_images: int = 5, max_videos: int = 2
+) -> tuple:
+    """Download images and videos from Telegraph content.
+
+    Args:
+        telegraph_contents: List of Telegraph content dictionaries
+        max_images: Maximum number of images to download
+        max_videos: Maximum number of videos to download
+
+    Returns:
+        Tuple of (image_data_list, video_data, video_mime_type)
+    """
+    image_data_list = []
+    video_data = None
+    video_mime_type = None
+
+    image_count = 0
+    video_count = 0
+
+    for content in telegraph_contents:
+        # Download images
+        if image_count < max_images:
+            for img_url in content.get("image_urls", []):
+                if image_count >= max_images:
+                    break
+                try:
+                    logger.info("Downloading Telegraph image: %s", img_url)
+                    img_bytes = await download_media(img_url)
+                    if img_bytes:
+                        image_data_list.append(img_bytes)
+                        image_count += 1
+                        logger.info(
+                            "Successfully downloaded Telegraph image %s",
+                            image_count,
+                        )
+                    else:
+                        logger.warning("Failed to download Telegraph image: %s", img_url)
+                except Exception as e:
+                    logger.error("Error downloading Telegraph image %s: %s", img_url, e)
+
+        # Download first video only (Gemini typically handles one video at a time)
+        if video_count < max_videos and not video_data:
+            for vid_url in content.get("video_urls", []):
+                if video_data:  # Only download the first video
+                    break
+                try:
+                    logger.info("Downloading Telegraph video: %s", vid_url)
+                    vid_bytes = await download_media(vid_url)
+                    if vid_bytes:
+                        video_data = vid_bytes
+                        # Try to determine MIME type from URL
+                        if vid_url.endswith(".mp4"):
+                            video_mime_type = "video/mp4"
+                        elif vid_url.endswith(".webm"):
+                            video_mime_type = "video/webm"
+                        elif vid_url.endswith(".mov"):
+                            video_mime_type = "video/quicktime"
+                        else:
+                            video_mime_type = "video/mp4"  # Default
+
+                        video_count += 1
+                        logger.info(
+                            "Successfully downloaded Telegraph video with MIME type: %s",
+                            video_mime_type,
+                        )
+                        break
+                    else:
+                        logger.warning("Failed to download Telegraph video: %s", vid_url)
+                except Exception as e:
+                    logger.error("Error downloading Telegraph video %s: %s", vid_url, e)
+
+    logger.info(
+        "Downloaded %s images and %s video from Telegraph content",
+        len(image_data_list),
+        1 if video_data else 0,
+    )
+    return image_data_list, video_data, video_mime_type
+
+
 async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /factcheck command.
 
@@ -676,15 +886,16 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         return
 
     # Get the message to fact-check
-    message_to_check = (
-        update.effective_message.reply_to_message.text
-        or update.effective_message.reply_to_message.caption
-        or ""
-    )
-
-    # Get the message to fact-check
     replied_message = update.effective_message.reply_to_message
-    message_to_check = replied_message.text or replied_message.caption or ""
+    original_message_text = replied_message.text or replied_message.caption or ""
+
+    # Extract Telegraph content if present (for AI processing)
+    message_to_check = original_message_text
+    telegraph_contents = []
+    if message_to_check:
+        message_to_check, telegraph_contents = await extract_telegraph_urls_and_content(
+            message_to_check, replied_message.entities
+        )
 
     image_data_list: List[bytes] = []
     video_data: Optional[bytes] = None
@@ -693,10 +904,36 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     audio_mime_type: Optional[str] = None
     youtube_urls = None
 
+    # Download Telegraph media if available
+    if telegraph_contents:
+        try:
+            telegraph_images, telegraph_video, telegraph_video_mime = (
+                await download_telegraph_media(telegraph_contents)
+            )
+            if telegraph_images:
+                image_data_list.extend(telegraph_images)
+                logger.info(
+                    "Added %s images from Telegraph content to factcheck",
+                    len(telegraph_images),
+                )
+            if (
+                telegraph_video and not video_data
+            ):  # Only use Telegraph video if no message video
+                video_data = telegraph_video
+                video_mime_type = telegraph_video_mime
+                logger.info(
+                    "Added video from Telegraph content to factcheck with MIME: %s",
+                    video_mime_type,
+                )
+        except Exception as e:
+            logger.error("Error downloading Telegraph media for factcheck: %s", e)
+
     # Video processing (takes precedence)
     if replied_message.video:
         logger.info(
-            "Fact-checking video: {replied_message.video.file_id} in chat {replied_message.chat.id}"
+            "Fact-checking video: %s in chat %s",
+            replied_message.video.file_id,
+            replied_message.chat.id,
         )
         try:
             video_file = await context.bot.get_file(replied_message.video.file_id)
@@ -706,13 +943,16 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 video_data = dl_video_data
                 image_data_list = []  # Clear images if video is present
                 logger.info(
-                    "Video {replied_message.video.file_id} downloaded for fact-check. MIME: {video_mime_type}"
+                    "Video %s downloaded for fact-check. MIME: %s",
+                    replied_message.video.file_id,
+                    video_mime_type,
                 )
                 if not message_to_check:  # If no caption, use default prompt for video
                     message_to_check = "Please fact-check this video."
             else:
                 logger.error(
-                    "Failed to download video {replied_message.video.file_id} for fact-check."
+                    "Failed to download video %s for fact-check.",
+                    replied_message.video.file_id,
                 )
         except Exception as e:  # noqa: BLE001
             logger.error("Error processing video for fact-check: %s", e, exc_info=True)
@@ -723,7 +963,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             replied_message.audio if replied_message.audio else replied_message.voice
         )
         if audio:
-            logger.info("Fact-checking audio: {audio.file_id}")
+            logger.info("Fact-checking audio: %s", audio.file_id)
             try:
                 audio_file = await context.bot.get_file(audio.file_id)
                 dl_audio_data = await download_media(audio_file.file_path)
@@ -732,11 +972,14 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     audio_mime_type = audio.mime_type
                     image_data_list = []  # Clear images
                     logger.info(
-                        "Audio {audio.file_id} downloaded for fact-check. MIME: {audio_mime_type}"
+                        "Audio %s downloaded for fact-check. MIME: %s",
+                        audio.file_id,
+                        audio_mime_type,
                     )
                 else:
                     logger.error(
-                        "Failed to download audio {audio.file_id} for fact-check."
+                        "Failed to download audio %s for fact-check.",
+                        audio.file_id,
                     )
             except Exception as e:  # noqa: BLE001
                 logger.error(
@@ -753,7 +996,8 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             if img_bytes:
                 image_data_list.append(img_bytes)
                 logger.info(
-                    "Added single image to fact-check list from message {replied_message.message_id}."
+                    "Added single image to fact-check list from message %s.",
+                    replied_message.message_id,
                 )
         except Exception:  # noqa: BLE001
             logger.error("Error downloading single image for fact-check", exc_info=True)
@@ -788,7 +1032,7 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     processing_message_text = "Fact-checking message..."
     if video_data:
         processing_message_text = "Analyzing video and fact-checking content..."
-    if audio_data:
+    elif audio_data:
         processing_message_text = "Analyzing audio and fact-checking content..."
     elif image_data_list:
         processing_message_text = (
@@ -796,6 +1040,28 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         )
     elif youtube_urls and len(youtube_urls) > 0:
         processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and fact-checking content..."
+
+    if telegraph_contents:
+        telegraph_media_info = ""
+        if any(content.get("image_urls") for content in telegraph_contents):
+            image_count = sum(
+                len(content.get("image_urls", [])) for content in telegraph_contents
+            )
+            telegraph_media_info += f" with {image_count} image(s)"
+        if any(content.get("video_urls") for content in telegraph_contents):
+            video_count = sum(
+                len(content.get("video_urls", [])) for content in telegraph_contents
+            )
+            telegraph_media_info += (
+                f" and {video_count} video(s)"
+                if telegraph_media_info
+                else f" with {video_count} video(s)"
+            )
+
+        if processing_message_text == "Fact-checking message...":
+            processing_message_text = f"Extracting and fact-checking content from {len(telegraph_contents)} Telegraph page(s){telegraph_media_info}..."
+        else:
+            processing_message_text = f"{processing_message_text[:-3]} and {len(telegraph_contents)} Telegraph page(s){telegraph_media_info}..."
 
     processing_message = await update.effective_message.reply_text(
         processing_message_text
@@ -882,7 +1148,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     try:
-        query = " ".join(context.args) if context.args else ""
+        original_query = " ".join(context.args) if context.args else ""
+        query = original_query  # Keep original for database logging
         image_data_list: List[bytes] = []
         video_data: Optional[bytes] = None
         video_mime_type: Optional[str] = None
@@ -891,6 +1158,7 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         language = None
         audio_data: Optional[bytes] = None
         audio_mime_type: Optional[str] = None
+        telegraph_contents = []
 
         if update.effective_message.reply_to_message:
             target_message_for_media = update.effective_message.reply_to_message
@@ -898,6 +1166,13 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 target_message_for_media.text or target_message_for_media.caption or ""
             )
             if replied_text_content:
+                # Extract Telegraph content if present in replied message
+                replied_text_content, telegraph_contents = (
+                    await extract_telegraph_urls_and_content(
+                        replied_text_content, target_message_for_media.entities
+                    )
+                )
+
                 if query:
                     language = languages.get(
                         alpha_2=langid.classify(query)[0]
@@ -1038,6 +1313,38 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             elif image_data_list:
                 query = "Please analyze these image(s)."
 
+        # Extract Telegraph content if present in the main query
+        
+        if query:
+            query, more_telegraph_contents = await extract_telegraph_urls_and_content(
+                query, update.effective_message.entities
+            )
+            telegraph_contents.extend(more_telegraph_contents)
+
+        # Download Telegraph media if available
+        if telegraph_contents:
+            try:
+                telegraph_images, telegraph_video, telegraph_video_mime = (
+                    await download_telegraph_media(telegraph_contents)
+                )
+                if telegraph_images:
+                    image_data_list.extend(telegraph_images)
+                    logger.info(
+                        "Added %s images from Telegraph content to q_handler",
+                        len(telegraph_images),
+                    )
+                if (
+                    telegraph_video and not video_data
+                ):  # Only use Telegraph video if no message video
+                    video_data = telegraph_video
+                    video_mime_type = telegraph_video_mime
+                    logger.info(
+                        "Added video from Telegraph content to q_handler with MIME: %s",
+                        video_mime_type,
+                    )
+            except Exception as e:
+                logger.error("Error downloading Telegraph media for q_handler: %s", e)
+
         if (
             query and not video_data and not image_data_list and not audio_data
         ):  # If query is present and no media is present, extract YouTube URLs
@@ -1053,6 +1360,28 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             processing_message_text = f"Analyzing {len(image_data_list)} image(s) and processing your question..."
         elif youtube_urls and len(youtube_urls) > 0:
             processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and processing your question..."
+
+        if telegraph_contents:
+            telegraph_media_info = ""
+            if any(content.get("image_urls") for content in telegraph_contents):
+                image_count = sum(
+                    len(content.get("image_urls", [])) for content in telegraph_contents
+                )
+                telegraph_media_info += f" with {image_count} image(s)"
+            if any(content.get("video_urls") for content in telegraph_contents):
+                video_count = sum(
+                    len(content.get("video_urls", [])) for content in telegraph_contents
+                )
+                telegraph_media_info += (
+                    f" and {video_count} video(s)"
+                    if telegraph_media_info
+                    else f" with {video_count} video(s)"
+                )
+
+            if processing_message_text == "Processing your question...":
+                processing_message_text = f"Extracting content from {len(telegraph_contents)} Telegraph page(s){telegraph_media_info} and processing your question..."
+            else:
+                processing_message_text = f"{processing_message_text[:-3]} and {len(telegraph_contents)} Telegraph page(s){telegraph_media_info}..."
 
         processing_message = await update.effective_message.reply_text(
             processing_message_text
@@ -1073,10 +1402,24 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             elif sender.username:
                 username = sender.username
 
+        # For database logging, use the original query without Telegraph content expansion
+        db_query_text = original_query
+        if update.effective_message.reply_to_message:
+            replied_text_original = (
+                update.effective_message.reply_to_message.text
+                or update.effective_message.reply_to_message.caption
+                or ""
+            )
+            if replied_text_original:
+                if db_query_text:
+                    db_query_text = f'Context from replied message: "{replied_text_original}"\n\nQuestion: {db_query_text}'
+                else:
+                    db_query_text = replied_text_original
+
         await queue_message_insert(
             user_id=update.effective_message.from_user.id,  # Use from_user here
             username=username,
-            text=f"Ask {TELEGRAPH_AUTHOR_NAME}: {query}",
+            text=f"Ask {TELEGRAPH_AUTHOR_NAME}: {db_query_text}",
             language=language,
             date=update.effective_message.date,
             reply_to_message_id=(
@@ -1171,11 +1514,11 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     # Get message text without the command
-    message_text = (
+    original_message_text = (
         update.effective_message.text or update.effective_message.caption or ""
     )
-    if message_text.startswith("/img"):
-        prompt = message_text[4:].strip()
+    if original_message_text.startswith("/img"):
+        prompt = original_message_text[4:].strip()
     else:
         prompt = ""
 
@@ -1240,6 +1583,11 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
         replied_text_content = replied_message.text or replied_message.caption or ""
         if replied_text_content:
+            # Extract Telegraph content if present in replied message
+            replied_text_content, _ = await extract_telegraph_urls_and_content(
+                replied_text_content, replied_message.entities
+            )
+
             if prompt:
                 if not image_urls:
                     prompt = f"{replied_text_content}\n\n{prompt}"
@@ -1253,9 +1601,20 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
+    # Extract Telegraph content if present in the main prompt
+    telegraph_contents = []
+    if prompt:
+        prompt, telegraph_contents = await extract_telegraph_urls_and_content(
+            prompt, update.effective_message.entities
+        )
+
     # Send a processing message
+    processing_message_text = "Processing your image request... This may take a moment."
+    if telegraph_contents:
+        processing_message_text = f"Extracting content from {len(telegraph_contents)} Telegraph page(s) and processing your image request... This may take a moment."
+
     processing_message = await update.effective_message.reply_text(
-        "Processing your image request... This may take a moment."
+        processing_message_text
     )
 
     try:
@@ -1377,7 +1736,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             logger.error("ImageGenerationError in img_handler: %s", e)
             await processing_message.edit_text(f"Image generation failed: {e}")
 
-        language = languages.get(alpha_2=langid.classify(message_text)[0]).name
+        language = languages.get(alpha_2=langid.classify(original_message_text)[0]).name
         username = "Anonymous"
         if update.effective_sender:
             sender = update.effective_message.from_user
@@ -1393,7 +1752,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await queue_message_insert(
             user_id=update.effective_message.from_user.id,
             username=username,
-            text=message_text,
+            text=original_message_text,  # Use original text without Telegraph content expansion
             language=language,
             date=update.effective_message.date,
             reply_to_message_id=(
@@ -1448,10 +1807,10 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info("Received /vid command from user %s", user_id)
 
     # Prompt Extraction
-    message_text = update.effective_message.text or ""
+    original_message_text = update.effective_message.text or ""
     prompt = ""
-    if message_text.startswith("/vid"):
-        prompt = message_text[len("/vid") :].strip()
+    if original_message_text.startswith("/vid"):
+        prompt = original_message_text[len("/vid") :].strip()
 
     # Image Handling
     image_data_bytes: Optional[bytes] = None
@@ -1497,7 +1856,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     )
 
     try:
-        language = languages.get(alpha_2=langid.classify(message_text)[0]).name
+        language = languages.get(alpha_2=langid.classify(original_message_text)[0]).name
 
         username = "Anonymous"
         if update.effective_sender:  # Should be update.effective_message.from_user
@@ -1514,7 +1873,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await queue_message_insert(
             user_id=update.effective_message.from_user.id,  # Use from_user here
             username=username,
-            text=message_text,
+            text=original_message_text,  # Use original text without Telegraph content expansion
             language=language,
             date=update.effective_message.date,
             reply_to_message_id=(
