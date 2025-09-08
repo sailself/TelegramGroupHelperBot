@@ -1466,19 +1466,27 @@ async def q_handler(
         )
 
         if response:
+            if isinstance(response, dict):
+                analysis = response.get("analysis")
+                final = response.get("final") or ""
+                resp_text = ""
+                if analysis:
+                    resp_text += f"*Thought process*\n{analysis}\n\n"
+                resp_text += f"*Final answer*\n{final}"
+            else:
+                resp_text = response
             if model_name:
-                response = f"{response}\n\n_Model: {model_name}_"
+                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
             await send_response(
                 processing_message,
-                response,
+                resp_text,
                 "Answer to Your Question",
                 ParseMode.MARKDOWN,
             )
         else:
             await processing_message.edit_text(
-                "I couldn't find an answer to your question. Please try rephrasing or asking something else."
+                "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
             )
-
     except Exception as e:  # noqa: BLE001
         logger.error("Error in q_handler: %s", e, exc_info=True)
         try:
