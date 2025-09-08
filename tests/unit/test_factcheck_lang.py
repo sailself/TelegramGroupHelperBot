@@ -3,8 +3,8 @@
 import unittest
 from unittest.mock import AsyncMock, patch
 
-import pytest
 import langdetect
+import pytest
 
 from bot.config import FACTCHECK_SYSTEM_PROMPT
 from bot.llm import call_gemini

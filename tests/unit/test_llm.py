@@ -1,19 +1,21 @@
-import asyncio
 import unittest
-from unittest.mock import MagicMock, patch, call
-import time # For type hinting if needed, but time.sleep is mocked
-from typing import Optional, List # Added List for type hinting
+from typing import Optional  # Added List for type hinting
+from unittest.mock import MagicMock, patch
 
-from google.longrunning import operations_pb2 # For specing Operation
-from google.rpc import status_pb2 # For specing Operation.error
-from google.genai import client as client_library # Changed to google.genai
-from google.genai import types as genai_types # Changed to google.genai
+from google.genai import client as client_library  # Changed to google.genai
+from google.genai import types as genai_types  # Changed to google.genai
+from google.longrunning import operations_pb2  # For specing Operation
+from google.rpc import status_pb2  # For specing Operation.error
 
 # Assuming llm.py is in bot.llm
 from bot.llm import (
-    generate_video_with_veo, GEMINI_VIDEO_MODEL, _safety_settings, GEMINI_API_KEY,
-    generate_image_with_vertex, generate_image_with_gemini # Added for the new tests
+    GEMINI_API_KEY,
+    GEMINI_VIDEO_MODEL,
+    generate_image_with_gemini,
+    generate_image_with_vertex,  # Added for the new tests
+    generate_video_with_veo,
 )
+
 # Constants like VERTEX_IMAGE_MODEL, VERTEX_PROJECT_ID, VERTEX_LOCATION are imported by llm.py itself
 # and will be patched in the tests for generate_image_with_vertex.
 

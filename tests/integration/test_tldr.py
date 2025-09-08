@@ -1,15 +1,14 @@
 """Integration test for the TLDR command."""
 
-import asyncio
 import datetime
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from telegram import Chat, Message, Update, User
-from telegram.ext import CallbackContext, ContextTypes
+from telegram.ext import ContextTypes
 
-from bot.config import TLDR_PROMPT
+from bot.config import TELEGRAPH_AUTHOR_NAME, TLDR_SYSTEM_PROMPT
 from bot.db.models import Message as DbMessage
 from bot.handlers import tldr_handler
 
@@ -78,7 +77,10 @@ class TestTLDRIntegration(unittest.TestCase):
                     # Verify Gemini was called with the correct system prompt
                     mock_call_gemini.assert_called_once()
                     args, kwargs = mock_call_gemini.call_args
-                    self.assertEqual(kwargs["system_prompt"], TLDR_PROMPT)
+                    expected_prompt = TLDR_SYSTEM_PROMPT.format(
+                        bot_name=TELEGRAPH_AUTHOR_NAME
+                    )
+                    self.assertEqual(kwargs["system_prompt"], expected_prompt)
                     
                     # Verify that a response was sent and has ≤200 characters
                     message_mock.reply_text.assert_called()

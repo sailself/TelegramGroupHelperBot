@@ -12,8 +12,9 @@ Usage:
 
 import asyncio
 import logging
+
 from telegram import Update
-from telegram.ext import Application, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, ContextTypes, MessageHandler, filters
 
 # Set your bot token here
 BOT_TOKEN = "YOUR_BOT_TOKEN_HERE"
@@ -30,7 +31,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     
     print(f"\n{'='*50}")
-    print(f"Message received!")
+    print("Message received!")
     print(f"{'='*50}")
     print(f"User ID: {user.id}")
     print(f"Username: @{user.username}" if user.username else "Username: None")

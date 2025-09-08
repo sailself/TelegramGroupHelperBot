@@ -2,10 +2,7 @@
 
 import asyncio
 import logging
-import os
-import signal
 import sys
-from typing import NoReturn
 
 from telegram.ext import (
     Application,
@@ -23,18 +20,18 @@ from bot.config import (
 from bot.db.database import init_db
 from bot.handlers import (
     factcheck_handler,
+    handle_media_group,
     help_handler,
+    img_handler,
+    load_whitelist,
     log_message,
+    paintme_handler,
+    profileme_handler,
     q_handler,
     start_handler,
-    tldr_handler,
-    img_handler,
-    vid_handler,
-    profileme_handler,
-    paintme_handler,
-    handle_media_group,
     support_handler,
-    load_whitelist,
+    tldr_handler,
+    vid_handler,
 )
 
 # Configure logging

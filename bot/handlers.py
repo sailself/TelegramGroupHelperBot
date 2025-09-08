@@ -1,59 +1,59 @@
 """Message handlers for the TelegramGroupHelperBot."""
 
+import asyncio
 import json
 import logging
-import asyncio
-import time
 import os
-from datetime import datetime
-from typing import Dict, List, Optional
 import re
+import time
+from datetime import datetime
 from io import BytesIO
-import markdown
-from bs4 import BeautifulSoup
+from typing import Dict, List, Optional
 
 import langid
+import markdown
 import requests
+from bs4 import BeautifulSoup
 from html2text import html2text
-from telegram import Update, InputMediaPhoto
+from pycountry import languages
+from telegram import InputMediaPhoto, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
-from pycountry import languages
 
 from bot.config import (
-    RATE_LIMIT_SECONDS,
-    TELEGRAM_MAX_LENGTH,
-    TLDR_SYSTEM_PROMPT,
+    ACCESS_CONTROLLED_COMMANDS,
     FACTCHECK_SYSTEM_PROMPT,
-    Q_SYSTEM_PROMPT,
-    PROFILEME_SYSTEM_PROMPT,
+    GEMINI_IMAGE_MODEL,
     PAINTME_SYSTEM_PROMPT,
-    USER_HISTORY_MESSAGE_COUNT,
+    PORTRAIT_SYSTEM_PROMPT,
+    PROFILEME_SYSTEM_PROMPT,
+    Q_SYSTEM_PROMPT,
+    RATE_LIMIT_SECONDS,
+    SUPPORT_LINK,
+    SUPPORT_MESSAGE,
+    TELEGRAM_MAX_LENGTH,
     TELEGRAPH_ACCESS_TOKEN,
     TELEGRAPH_AUTHOR_NAME,
     TELEGRAPH_AUTHOR_URL,
+    TLDR_SYSTEM_PROMPT,
     USE_VERTEX_IMAGE,
+    USER_HISTORY_MESSAGE_COUNT,
     VERTEX_IMAGE_MODEL,
-    PORTRAIT_SYSTEM_PROMPT,
-    SUPPORT_MESSAGE,
-    SUPPORT_LINK,
     WHITELIST_FILE_PATH,
-    ACCESS_CONTROLLED_COMMANDS,
-    GEMINI_IMAGE_MODEL,
 )
 from bot.db.database import (  # Reformatted for clarity
     queue_message_insert,
-    select_messages_from_id,
     select_messages_by_user,
+    select_messages_from_id,
 )
 from bot.llm import (
+    ImageGenerationError,
     call_gemini,
+    download_media,
     generate_image_with_gemini,
     generate_image_with_vertex,
-    download_media,
     generate_video_with_veo,
-    ImageGenerationError,
 )
 from bot.tools.telegraph_extractor import extract_telegraph_content
 

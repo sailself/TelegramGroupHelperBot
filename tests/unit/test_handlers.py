@@ -1,12 +1,14 @@
-import asyncio
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
 from io import BytesIO
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from telegram import Update, User, Message, Chat, PhotoSize, File
+from telegram import Chat, File, Message, PhotoSize, Update, User
 from telegram.ext import ContextTypes
 
-from bot.handlers import vid_handler
+from bot.config import PAINTME_SYSTEM_PROMPT, PROFILEME_SYSTEM_PROMPT
+from bot.db.models import Message as DBMessage  # Alias to avoid conflict with telegram.Message
+from bot.handlers import img_handler, paintme_handler, profileme_handler, vid_handler
+
 # Ensure these can be imported. If not, the test environment needs adjustment.
 # For this task, we assume they are importable.
 # from bot.llm import generate_video_with_veo, download_media 
@@ -267,7 +269,7 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
     # --- Test Vertex AI Path (USE_VERTEX_IMAGE = True) ---
     @patch('bot.handlers.USE_VERTEX_IMAGE', True)
     @patch('bot.handlers.generate_image_with_vertex', new_callable=AsyncMock)
-    async def test_img_handler_vertex_multiple_images(self, mock_generate_vertex, _mock_use_vertex):
+    async def test_img_handler_vertex_multiple_images(self, mock_generate_vertex):
         self.update.effective_message.text = "/img vertex multi prompt"
         mock_generate_vertex.return_value = [b'img1', b'img2', b'img3', b'img4']
 
@@ -292,7 +294,7 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch('bot.handlers.USE_VERTEX_IMAGE', True)
     @patch('bot.handlers.generate_image_with_vertex', new_callable=AsyncMock)
-    async def test_img_handler_vertex_single_image(self, mock_generate_vertex, _mock_use_vertex):
+    async def test_img_handler_vertex_single_image(self, mock_generate_vertex):
         self.update.effective_message.text = "/img vertex single prompt"
         mock_generate_vertex.return_value = [b'img1']
 
@@ -310,7 +312,7 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch('bot.handlers.USE_VERTEX_IMAGE', True)
     @patch('bot.handlers.generate_image_with_vertex', new_callable=AsyncMock)
-    async def test_img_handler_vertex_no_images_returned(self, mock_generate_vertex, _mock_use_vertex):
+    async def test_img_handler_vertex_no_images_returned(self, mock_generate_vertex):
         self.update.effective_message.text = "/img vertex no images"
         mock_generate_vertex.return_value = []
 
@@ -326,7 +328,7 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
     # --- Test Gemini Path (USE_VERTEX_IMAGE = False) ---
     @patch('bot.handlers.USE_VERTEX_IMAGE', False)
     @patch('bot.handlers.generate_image_with_gemini', new_callable=AsyncMock)
-    async def test_img_handler_gemini_success(self, mock_generate_gemini, _mock_use_vertex):
+    async def test_img_handler_gemini_success(self, mock_generate_gemini):
         self.update.effective_message.text = "/img gemini good prompt"
         mock_generate_gemini.return_value = b'gemini_img_bytes'
 
@@ -344,7 +346,7 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch('bot.handlers.USE_VERTEX_IMAGE', False)
     @patch('bot.handlers.generate_image_with_gemini', new_callable=AsyncMock)
-    async def test_img_handler_gemini_failure_no_image_url(self, mock_generate_gemini, _mock_use_vertex):
+    async def test_img_handler_gemini_failure_no_image_url(self, mock_generate_gemini):
         self.update.effective_message.text = "/img gemini bad prompt"
         mock_generate_gemini.return_value = None # Simulate generation failure
 
@@ -365,8 +367,8 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
 
     @patch('bot.handlers.USE_VERTEX_IMAGE', False)
     @patch('bot.handlers.generate_image_with_gemini', new_callable=AsyncMock)
-    @patch('bot.handlers.download_media', new_callable=AsyncMock) # Not used here but good to have if logic changes
-    async def test_img_handler_gemini_failure_with_image_url(self, mock_download_media, mock_generate_gemini, _mock_use_vertex):
+    @patch('bot.handlers.download_media', new_callable=AsyncMock)  # Not used here but good to have if logic changes
+    async def test_img_handler_gemini_failure_with_image_url(self, mock_download_media, mock_generate_gemini):
         self.update.effective_message.text = "/img gemini edit bad"
         
         # Mock replied message with photo
@@ -446,11 +448,6 @@ class TestImgHandler(unittest.IsolatedAsyncioTestCase):
 # `queue_message_insert` and `langid.classify` are also dependencies of `img_handler`.
 # Added mocks for them in `asyncSetUp`.
 
-# Imports for new tests
-from bot.db.models import Message as DBMessage  # Alias to avoid conflict with telegram.Message
-from bot.config import PROFILEME_SYSTEM_PROMPT, PAINTME_SYSTEM_PROMPT
-
-
 class TestProfileMeHandler(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self):
@@ -513,7 +510,9 @@ class TestProfileMeHandler(unittest.IsolatedAsyncioTestCase):
         self.mock_call_gemini.return_value = "This is your generated profile."
         
         # Import USER_HISTORY_MESSAGE_COUNT here or access via self.mock_user_history_count if needed for assertion
-        from bot.config import USER_HISTORY_MESSAGE_COUNT as UHC_CONFIG # Using actual configured for assertion consistency
+        from bot.config import (
+            USER_HISTORY_MESSAGE_COUNT as UHC_CONFIG,  # Using actual configured for assertion consistency
+        )
 
         await profileme_handler(self.update, self.context)
 
@@ -647,15 +646,15 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
             for i in range(count)
         ]
 
-    @patch('bot.handlers.USE_VERTEX_IMAGE', False) # Test Gemini Path
-    async def test_paintme_success_gemini(self, _mock_use_vertex):
+    @patch('bot.handlers.USE_VERTEX_IMAGE', False)  # Test Gemini Path
+    async def test_paintme_success_gemini(self):
         # Test with USER_HISTORY_MESSAGE_COUNT returning exactly 50 messages
         # USER_HISTORY_MESSAGE_COUNT is patched to 50 in setUp
         self.mock_select_messages_by_user.return_value = self._get_sample_messages(count=50) 
         self.mock_call_gemini.return_value = "A beautiful sunset" # Mocked image prompt
         self.mock_generate_image_gemini.return_value = b"gemini_image_bytes"
         
-        from bot.config import USER_HISTORY_MESSAGE_COUNT as UHC_CONFIG # Get patched value
+        from bot.config import USER_HISTORY_MESSAGE_COUNT as UHC_CONFIG  # Get patched value
 
         await paintme_handler(self.update, self.context)
 
@@ -687,8 +686,8 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
         self.processing_message.delete.assert_called_once()
         self.mock_queue_message_insert.assert_called_once()
 
-    @patch('bot.handlers.USE_VERTEX_IMAGE', True) # Test Vertex Path
-    async def test_paintme_success_vertex(self, _mock_use_vertex):
+    @patch('bot.handlers.USE_VERTEX_IMAGE', True)  # Test Vertex Path
+    async def test_paintme_success_vertex(self):
         # Test with USER_HISTORY_MESSAGE_COUNT returning more than 50, e.g., 60
         # USER_HISTORY_MESSAGE_COUNT is patched to 50 in setUp for this class,
         # but handler logic fetches USER_HISTORY_MESSAGE_COUNT then slices to 50.
@@ -718,7 +717,7 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
         self.mock_call_gemini.return_value = "A serene lake"
         self.mock_generate_image_vertex.return_value = [b"vertex_image_bytes"]
         
-        from bot.config import USER_HISTORY_MESSAGE_COUNT as UHC_CONFIG # Get patched value (50)
+        from bot.config import USER_HISTORY_MESSAGE_COUNT as UHC_CONFIG  # Get patched value (50)
 
         await paintme_handler(self.update, self.context)
 
@@ -772,7 +771,7 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
         )
 
     @patch('bot.handlers.USE_VERTEX_IMAGE', False)
-    async def test_paintme_image_generation_fails_gemini(self, _mock_use_vertex):
+    async def test_paintme_image_generation_fails_gemini(self):
         self.mock_select_messages_by_user.return_value = self._get_sample_messages(count=10)
         self.mock_call_gemini.return_value = "A test prompt"
         self.mock_generate_image_gemini.return_value = None # Gemini image gen fails
@@ -784,7 +783,7 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
         )
 
     @patch('bot.handlers.USE_VERTEX_IMAGE', True)
-    async def test_paintme_image_generation_fails_vertex(self, _mock_use_vertex):
+    async def test_paintme_image_generation_fails_vertex(self):
         self.mock_select_messages_by_user.return_value = self._get_sample_messages(count=10)
         self.mock_call_gemini.return_value = "A test prompt"
         self.mock_generate_image_vertex.return_value = [] # Vertex image gen fails
@@ -792,7 +791,7 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
         await paintme_handler(self.update, self.context)
         
         # Get the actual VERTEX_IMAGE_MODEL name for the message
-        from bot.config import VERTEX_IMAGE_MODEL # Import locally for this
+        from bot.config import VERTEX_IMAGE_MODEL  # Import locally for this
         expected_message = f"Sorry, {VERTEX_IMAGE_MODEL} couldn't paint your picture. Please try again."
         self.processing_message.edit_text.assert_called_with(expected_message)
 
@@ -808,6 +807,4 @@ class TestPaintMeHandler(unittest.IsolatedAsyncioTestCase):
         self.processing_message.edit_text.assert_not_called()
 
 # Need to import ANY from unittest.mock for the paintme_handler test
-from unittest.mock import ANY
 # Import USER_HISTORY_MESSAGE_COUNT for assertions
-from bot.config import USER_HISTORY_MESSAGE_COUNT 
