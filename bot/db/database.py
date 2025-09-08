@@ -3,12 +3,13 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
 from datetime import datetime
+from typing import AsyncGenerator, List, Optional
 
-from sqlalchemy import select as sa_select, update as sa_update
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy import select as sa_select
+from sqlalchemy import update as sa_update
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from bot.config import DATABASE_URL
 from bot.db.models import Base, Message

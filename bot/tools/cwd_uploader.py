@@ -1,10 +1,11 @@
 """CWD.PW image uploader module for the TelegramGroupHelperBot."""
 
-import logging
 import base64
+import logging
 import secrets
-import aiohttp
 from typing import Optional
+
+import aiohttp
 
 logger = logging.getLogger(__name__)
 

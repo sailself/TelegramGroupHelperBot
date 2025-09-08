@@ -4,7 +4,6 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
-from typing import Dict, List, Optional, cast
 
 from dotenv import load_dotenv
 

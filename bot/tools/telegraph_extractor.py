@@ -1,6 +1,7 @@
-import requests
-from urllib.parse import urlparse
 import logging
+from urllib.parse import urlparse
+
+import requests
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,13 @@ def extract_telegraph_content(url: str) -> dict:
         response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
     except requests.exceptions.RequestException as e:
         logger.error(f"Error fetching Telegraph page: {e}")
-        raise Exception(f"Error fetching Telegraph page: {e}")
+        raise Exception(f"Error fetching Telegraph page: {e}") from e
 
     try:
         data = response.json()
-    except ValueError:
+    except ValueError as e:
         logger.error("Error parsing JSON response from Telegraph API.")
-        raise Exception("Error parsing JSON response from Telegraph API.")
+        raise Exception("Error parsing JSON response from Telegraph API.") from e
 
     if not data.get("ok"):
         error_message = data.get("error", "Unknown error from Telegraph API")

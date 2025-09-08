@@ -2,11 +2,11 @@
 
 import base64
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch, call
-import aiohttp
-import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from bot.cwd_uploader import upload_base64_image_to_cwd, upload_image_bytes_to_cwd
+import aiohttp
+
+from bot.tools.cwd_uploader import upload_base64_image_to_cwd, upload_image_bytes_to_cwd
 
 
 class TestCwdUploader(unittest.IsolatedAsyncioTestCase):

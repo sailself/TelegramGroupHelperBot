@@ -1,15 +1,16 @@
 """Integration tests for the Telegraph functionality."""
 
-import pytest
-from unittest.mock import patch, MagicMock
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from telegram import Update, Message, Chat, User, Bot
+import pytest
+from telegram import Bot, Chat, Message, Update, User
 from telegram.ext import ContextTypes
 
-from bot.handlers import q_handler, factcheck_handler, send_response
+from bot.handlers import factcheck_handler, q_handler, send_response
 
 
-class TestTelegraphIntegration:
+class TestTelegraphIntegration(unittest.TestCase):
     """Integration tests for Telegraph functionality."""
 
     @pytest.fixture
@@ -49,7 +50,7 @@ class TestTelegraphIntegration:
         long_response = "A" * 5000
         
         # Mock create_telegraph_page function
-        with patch('bot.handlers.create_telegraph_page') as mock_telegraph:
+        with patch('bot.handlers.create_telegraph_page', new_callable=AsyncMock) as mock_telegraph:
             # Configure the mock to return a telegraph URL
             mock_telegraph.return_value = "https://telegra.ph/test-page"
             
@@ -79,12 +80,12 @@ class TestTelegraphIntegration:
         mock_update.effective_message.reply_text.return_value = processing_message
         
         # Mock call_gemini to return a long response
-        with patch('bot.handlers.call_gemini') as mock_gemini:
+        with patch('bot.handlers.call_gemini', new_callable=AsyncMock) as mock_gemini:
             long_response = "A" * 5000
             mock_gemini.return_value = long_response
             
             # Mock send_response function
-            with patch('bot.handlers.send_response') as mock_send:
+            with patch('bot.handlers.send_response', new_callable=AsyncMock) as mock_send:
                 # Run the handler
                 await q_handler(mock_update, mock_context)
                 
@@ -110,7 +111,7 @@ class TestTelegraphIntegration:
         mock_update.effective_message.reply_text.return_value = processing_message
         
         # Mock stream_gemini to add long content to the queue
-        with patch('bot.handlers.stream_gemini') as mock_gemini:
+        with patch('bot.handlers.stream_gemini', new_callable=AsyncMock) as mock_gemini:
             # Create a mock queue
             mock_queue = MagicMock()
             
@@ -119,7 +120,7 @@ class TestTelegraphIntegration:
             mock_gemini.return_value = mock_queue
             
             # Mock send_response function
-            with patch('bot.handlers.send_response') as mock_send:
+            with patch('bot.handlers.send_response', new_callable=AsyncMock) as mock_send:
                 # Run the handler
                 await factcheck_handler(mock_update, mock_context)
                 

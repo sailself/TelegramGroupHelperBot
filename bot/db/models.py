@@ -1,7 +1,6 @@
 """Database models for the TelegramGroupHelperBot."""
 
 from datetime import datetime
-from typing import Optional
 
 from sqlalchemy import BigInteger, Column, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.ext.declarative import declarative_base

@@ -2,12 +2,12 @@
 
 import json
 import unittest
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
 
-from bot.handlers import create_telegraph_page, markdown_to_telegraph_nodes, html_to_telegraph_nodes
+from bot.handlers import create_telegraph_page, html_to_telegraph_nodes, markdown_to_telegraph_nodes
 
 
 class TestTelegraphFunctionality(unittest.TestCase):

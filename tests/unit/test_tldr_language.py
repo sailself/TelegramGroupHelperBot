@@ -1,6 +1,5 @@
 """Test that TLDR always outputs in Chinese regardless of input language."""
 
-import asyncio
 import unittest
 from unittest.mock import AsyncMock, patch
 

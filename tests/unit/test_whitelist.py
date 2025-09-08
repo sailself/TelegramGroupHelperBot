@@ -1,11 +1,8 @@
 """Tests for the whitelist functionality."""
 
-import os
-import tempfile
-import pytest
-from unittest.mock import patch, mock_open
+from unittest.mock import mock_open, patch
 
-from bot.handlers import is_user_whitelisted, is_chat_whitelisted, is_access_allowed
+from bot.handlers import is_access_allowed, is_chat_whitelisted, is_user_whitelisted
 
 
 class TestWhitelist:
