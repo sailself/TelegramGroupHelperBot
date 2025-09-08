@@ -1451,6 +1451,15 @@ async def q_handler(
             video_data or image_data_list or audio_data or youtube_urls
         )  # Use Pro model if media is present
 
+        include_media = model_name == LLAMA_MODEL
+        if not include_media:
+            image_data_list = None
+            video_data = None
+            audio_data = None
+            video_mime_type = None
+            audio_mime_type = None
+            use_pro_model = bool(youtube_urls)
+
         if call_model is None:
             call_model = call_gemini
         response = await call_model(

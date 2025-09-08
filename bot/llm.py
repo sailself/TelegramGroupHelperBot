@@ -12,7 +12,7 @@ import aiohttp
 import google.genai as genai
 from google.genai import types
 from PIL import Image
-from openai import AsyncOpenAI, BadRequestError, OpenAIError
+from openai import AsyncOpenAI, BadRequestError, OpenAIError, RateLimitError
 
 from bot.config import (
     CWD_PW_API_KEY,
@@ -76,7 +76,9 @@ def get_openrouter_client() -> AsyncOpenAI:
             raise ValueError("OPENROUTER_API_KEY environment variable not set.")
         logger.info("Initializing global OpenRouter client with API key.")
         _openrouter_client = AsyncOpenAI(
-            base_url=OPENROUTER_BASE_URL, api_key=OPENROUTER_API_KEY
+            base_url=OPENROUTER_BASE_URL,
+            api_key=OPENROUTER_API_KEY,
+            max_retries=0,
         )
     return _openrouter_client
 
@@ -1576,6 +1578,11 @@ async def call_openrouter(
             extra_body={"top_k": OPENROUTER_TOP_K},
         )
         return _parse_openrouter_response(model_name, completion.choices[0].message.content)
+    except RateLimitError as e:  # pragma: no cover - best effort
+        logger.error("Rate limit error calling OpenRouter model %s: %s", model_name, e)
+        return {
+            "final": f"Model {model_name} is currently rate-limited. Please try again later.",
+        }
     except BadRequestError as e:
         status = getattr(e, "status_code", None)
         if status in {400, 415} or "media" in str(e).lower():
