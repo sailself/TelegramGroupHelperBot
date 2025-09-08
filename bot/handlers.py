@@ -1466,7 +1466,7 @@ async def q_handler(
         )
 
         if response:
-            if isinstance(response, dict):
+            if model_name == GPT_MODEL and isinstance(response, dict):
                 analysis = response.get("analysis")
                 final = response.get("final") or ""
                 resp_text = ""
@@ -1474,7 +1474,7 @@ async def q_handler(
                     resp_text += f"*Thought process*\n{analysis}\n\n"
                 resp_text += f"*Final answer*\n{final}"
             else:
-                resp_text = response
+                resp_text = response if isinstance(response, str) else response.get("final", "")
             if model_name:
                 resp_text = f"{resp_text}\n\n_Model: {model_name}_"
             await send_response(

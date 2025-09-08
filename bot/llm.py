@@ -6,7 +6,7 @@ import logging
 import re
 import time
 from io import BytesIO
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import aiohttp
 import google.genai as genai
@@ -36,6 +36,8 @@ from bot.config import (
     OPENROUTER_TEMPERATURE,
     OPENROUTER_TOP_K,
     OPENROUTER_TOP_P,
+    QWEN_MODEL,
+    GPT_MODEL,
 )
 
 # Set up logging
@@ -107,6 +109,27 @@ def parse_openrouter_content(content: str) -> dict[str, str]:
         "analysis": "\n".join(filter(None, analysis_parts)).strip(),
         "final": "\n".join(filter(None, final_parts)).strip(),
     }
+
+
+def parse_qwen_content(content: str) -> dict[str, str]:
+    """Split Qwen output into thought and final sections using <think> tags."""
+    match = re.search(r"<think>(.*?)</think>(.*)", content, re.DOTALL)
+    if match:
+        analysis = match.group(1).strip()
+        final = match.group(2).strip()
+    else:
+        analysis = ""
+        final = content.strip()
+    return {"analysis": analysis, "final": final}
+
+
+def _parse_openrouter_response(model_name: str, content: str) -> Union[dict[str, str], str]:
+    """Return parsed response based on the model type."""
+    if model_name == GPT_MODEL:
+        return parse_openrouter_content(content)
+    if model_name == QWEN_MODEL:
+        return parse_qwen_content(content)["final"]
+    return content
 
 
 def get_vertex_client():
@@ -1501,7 +1524,7 @@ async def call_openrouter(
     audio_data: Optional[bytes] = None,
     audio_mime_type: Optional[str] = None,
     model_name: str,
-) -> Optional[dict[str, str]]:
+) -> Optional[Union[dict[str, str], str]]:
     """Call an OpenRouter model using the OpenAI SDK.
 
     Retries without media if the model reports unsupported media types.
@@ -1552,7 +1575,7 @@ async def call_openrouter(
             top_p=OPENROUTER_TOP_P,
             extra_body={"top_k": OPENROUTER_TOP_K},
         )
-        return parse_openrouter_content(completion.choices[0].message.content)
+        return _parse_openrouter_response(model_name, completion.choices[0].message.content)
     except BadRequestError as e:
         status = getattr(e, "status_code", None)
         if status in {400, 415} or "media" in str(e).lower():
@@ -1569,7 +1592,7 @@ async def call_openrouter(
                     top_p=OPENROUTER_TOP_P,
                     extra_body={"top_k": OPENROUTER_TOP_K},
                 )
-                return parse_openrouter_content(completion.choices[0].message.content)
+                return _parse_openrouter_response(model_name, completion.choices[0].message.content)
             except OpenAIError as inner_e:  # pragma: no cover - best effort
                 logger.error(
                     "Retry without media failed for model %s: %s", model_name, inner_e, exc_info=True
