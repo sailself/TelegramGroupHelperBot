@@ -1543,23 +1543,21 @@ async def call_openrouter(
             if image_data_list:
                 for img in image_data_list:
                     b64 = base64.b64encode(img).decode("utf-8")
-                    user_parts.append({"type": "input_image", "image_base64": b64})
+                    user_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
             if video_data:
                 b64 = base64.b64encode(video_data).decode("utf-8")
                 user_parts.append(
                     {
-                        "type": "input_video",
-                        "video_base64": b64,
-                        "mime_type": video_mime_type,
+                        "type": "video_url",
+                        "video_url": {"url": f"data:video/mp4;base64,{b64}"}
                     }
                 )
             if audio_data:
                 b64 = base64.b64encode(audio_data).decode("utf-8")
                 user_parts.append(
                     {
-                        "type": "input_audio",
-                        "audio_base64": b64,
-                        "mime_type": audio_mime_type,
+                        "type": "audio_url",
+                        "audio_url": {"url": f"data:audio/mp3;base64,{b64}"}
                     }
                 )
 

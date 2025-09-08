@@ -1452,7 +1452,7 @@ async def q_handler(
         )  # Use Pro model if media is present
 
         include_media = model_name == LLAMA_MODEL
-        if not include_media:
+        if call_model and not include_media:
             image_data_list = None
             video_data = None
             audio_data = None
