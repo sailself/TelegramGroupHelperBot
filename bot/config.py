@@ -77,6 +77,17 @@ VERTEX_VIDEO_MODEL=os.getenv("VERTEX_VIDEO_MODEL")
 USE_VERTEX_IMAGE=os.getenv("USE_VERTEX_IMAGE", "false").lower() == "true"
 VERTEX_IMAGE_MODEL=os.getenv("VERTEX_IMAGE_MODEL")
 
+# OpenRouter settings
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_TEMPERATURE = float(os.getenv("OPENROUTER_TEMPERATURE", "0.7"))
+OPENROUTER_TOP_K = int(os.getenv("OPENROUTER_TOP_K", "40"))
+OPENROUTER_TOP_P = float(os.getenv("OPENROUTER_TOP_P", "0.95"))
+DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "")
+QWEN_MODEL = os.getenv("QWEN_MODEL", "")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL", "")
+GPT_MODEL = os.getenv("GPT_MODEL", "")
+
 # Whether to use webhooks
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "")

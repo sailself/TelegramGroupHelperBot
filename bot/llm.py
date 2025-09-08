@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import logging
+import time
 from io import BytesIO
 from typing import List, Optional
 
@@ -10,6 +11,7 @@ import aiohttp
 import google.genai as genai
 from google.genai import types
 from PIL import Image
+from openai import AsyncOpenAI, BadRequestError, OpenAIError
 
 from bot.config import (
     CWD_PW_API_KEY,
@@ -28,6 +30,11 @@ from bot.config import (
     VERTEX_LOCATION,
     VERTEX_PROJECT_ID,
     VERTEX_VIDEO_MODEL,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_TEMPERATURE,
+    OPENROUTER_TOP_K,
+    OPENROUTER_TOP_P,
 )
 
 # Set up logging
@@ -53,6 +60,22 @@ def get_gemini_client():
 
 
 _global_vertex_client = None
+
+_openrouter_client: Optional[AsyncOpenAI] = None
+
+
+def get_openrouter_client() -> AsyncOpenAI:
+    """Lazily initializes and returns the global OpenRouter client."""
+    global _openrouter_client  # noqa: PLW0603
+    if _openrouter_client is None:
+        if not OPENROUTER_API_KEY:
+            logger.error("OPENROUTER_API_KEY environment variable not set during client initialization.")
+            raise ValueError("OPENROUTER_API_KEY environment variable not set.")
+        logger.info("Initializing global OpenRouter client with API key.")
+        _openrouter_client = AsyncOpenAI(
+            base_url=OPENROUTER_BASE_URL, api_key=OPENROUTER_API_KEY
+        )
+    return _openrouter_client
 
 
 def get_vertex_client():
@@ -1433,3 +1456,96 @@ async def generate_image_with_vertex(
     return generated_images_bytes[
         :number_of_images
     ]  # Ensure we don't return more than requested
+
+
+async def call_openrouter(
+    *,
+    system_prompt: str,
+    user_content: str,
+    image_data_list: Optional[List[bytes]] = None,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
+    use_pro_model: bool = False,
+    youtube_urls: Optional[List[str]] = None,
+    audio_data: Optional[bytes] = None,
+    audio_mime_type: Optional[str] = None,
+    model_name: str,
+) -> Optional[str]:
+    """Call an OpenRouter model using the OpenAI SDK.
+
+    Retries without media if the model reports unsupported media types.
+    """
+
+    client = get_openrouter_client()
+
+    if youtube_urls:
+        user_content += "\n" + "\n".join(f"YouTube URL: {url}" for url in youtube_urls)
+
+    def build_messages(include_media: bool = True):
+        user_parts = [{"type": "text", "text": user_content}]
+        if include_media:
+            if image_data_list:
+                for img in image_data_list:
+                    b64 = base64.b64encode(img).decode("utf-8")
+                    user_parts.append({"type": "input_image", "image_base64": b64})
+            if video_data:
+                b64 = base64.b64encode(video_data).decode("utf-8")
+                user_parts.append(
+                    {
+                        "type": "input_video",
+                        "video_base64": b64,
+                        "mime_type": video_mime_type,
+                    }
+                )
+            if audio_data:
+                b64 = base64.b64encode(audio_data).decode("utf-8")
+                user_parts.append(
+                    {
+                        "type": "input_audio",
+                        "audio_base64": b64,
+                        "mime_type": audio_mime_type,
+                    }
+                )
+
+        return [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+            {"role": "user", "content": user_parts},
+        ]
+
+    messages = build_messages(include_media=True)
+    try:
+        completion = await client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=OPENROUTER_TEMPERATURE,
+            top_p=OPENROUTER_TOP_P,
+            extra_body={"top_k": OPENROUTER_TOP_K},
+        )
+        return completion.choices[0].message.content
+    except BadRequestError as e:
+        status = getattr(e, "status_code", None)
+        if status in {400, 415} or "media" in str(e).lower():
+            logger.warning(
+                "Model %s does not support provided media, retrying without media. Error: %s",
+                model_name,
+                e,
+            )
+            try:
+                completion = await client.chat.completions.create(
+                    model=model_name,
+                    messages=build_messages(include_media=False),
+                    temperature=OPENROUTER_TEMPERATURE,
+                    top_p=OPENROUTER_TOP_P,
+                    extra_body={"top_k": OPENROUTER_TOP_K},
+                )
+                return completion.choices[0].message.content
+            except OpenAIError as inner_e:  # pragma: no cover - best effort
+                logger.error(
+                    "Retry without media failed for model %s: %s", model_name, inner_e, exc_info=True
+                )
+                return None
+        logger.error("OpenRouter request failed for model %s: %s", model_name, e, exc_info=True)
+        return None
+    except OpenAIError as e:  # pragma: no cover - best effort
+        logger.error("Error calling OpenRouter model %s: %s", model_name, e, exc_info=True)
+        return None

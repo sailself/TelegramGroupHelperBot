@@ -16,6 +16,7 @@ import requests
 from bs4 import BeautifulSoup
 from html2text import html2text
 from pycountry import languages
+from functools import partial
 from telegram import InputMediaPhoto, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -30,6 +31,10 @@ from bot.config import (
     PROFILEME_SYSTEM_PROMPT,
     Q_SYSTEM_PROMPT,
     RATE_LIMIT_SECONDS,
+    DEEPSEEK_MODEL,
+    QWEN_MODEL,
+    LLAMA_MODEL,
+    GPT_MODEL,
     SUPPORT_LINK,
     SUPPORT_MESSAGE,
     TELEGRAM_MAX_LENGTH,
@@ -50,6 +55,7 @@ from bot.db.database import (  # Reformatted for clarity
 from bot.llm import (
     ImageGenerationError,
     call_gemini,
+    call_openrouter,
     download_media,
     generate_image_with_gemini,
     generate_image_with_vertex,
@@ -1127,7 +1133,13 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass
 
 
-async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def q_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    call_model=None,
+    model_name: Optional[str] = None,
+) -> None:
     """Handle the /q command.
 
     Args:
@@ -1439,7 +1451,9 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             video_data or image_data_list or audio_data or youtube_urls
         )  # Use Pro model if media is present
 
-        response = await call_gemini(
+        if call_model is None:
+            call_model = call_gemini
+        response = await call_model(
             system_prompt=system_prompt,
             user_content=query,
             image_data_list=image_data_list if image_data_list else None,
@@ -1452,6 +1466,8 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
 
         if response:
+            if model_name:
+                response = f"{response}\n\n_Model: {model_name}_"
             await send_response(
                 processing_message,
                 response,
@@ -1471,6 +1487,42 @@ async def q_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
         except Exception:  # noqa: BLE001 # Inner exception during error reporting
             pass
+
+
+async def deepseek_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await q_handler(
+        update,
+        context,
+        call_model=partial(call_openrouter, model_name=DEEPSEEK_MODEL),
+        model_name=DEEPSEEK_MODEL,
+    )
+
+
+async def qwen_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await q_handler(
+        update,
+        context,
+        call_model=partial(call_openrouter, model_name=QWEN_MODEL),
+        model_name=QWEN_MODEL,
+    )
+
+
+async def llama_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await q_handler(
+        update,
+        context,
+        call_model=partial(call_openrouter, model_name=LLAMA_MODEL),
+        model_name=LLAMA_MODEL,
+    )
+
+
+async def gpt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await q_handler(
+        update,
+        context,
+        call_model=partial(call_openrouter, model_name=GPT_MODEL),
+        model_name=GPT_MODEL,
+    )
 
 
 async def handle_media_group(

@@ -27,6 +27,10 @@ from bot.handlers import (
     log_message,
     paintme_handler,
     profileme_handler,
+    deepseek_handler,
+    qwen_handler,
+    llama_handler,
+    gpt_handler,
     q_handler,
     start_handler,
     support_handler,
@@ -65,6 +69,10 @@ def main():
     application.add_handler(CommandHandler("tldr", tldr_handler))
     application.add_handler(CommandHandler("factcheck", factcheck_handler))
     application.add_handler(CommandHandler("q", q_handler))
+    application.add_handler(CommandHandler("deepseek", deepseek_handler))
+    application.add_handler(CommandHandler("qwen", qwen_handler))
+    application.add_handler(CommandHandler("llama", llama_handler))
+    application.add_handler(CommandHandler("gpt", gpt_handler))
     application.add_handler(CommandHandler("img", img_handler))
     application.add_handler(CommandHandler("vid", vid_handler))
     application.add_handler(CommandHandler("profileme", profileme_handler))
