@@ -3,13 +3,16 @@
 import asyncio
 import base64
 import logging
+import re
+import time
 from io import BytesIO
-from typing import List, Optional
+from typing import List, Optional, Union
 
 import aiohttp
 import google.genai as genai
 from google.genai import types
 from PIL import Image
+from openai import AsyncOpenAI, BadRequestError, OpenAIError, RateLimitError
 
 from bot.config import (
     CWD_PW_API_KEY,
@@ -28,6 +31,13 @@ from bot.config import (
     VERTEX_LOCATION,
     VERTEX_PROJECT_ID,
     VERTEX_VIDEO_MODEL,
+    OPENROUTER_API_KEY,
+    OPENROUTER_BASE_URL,
+    OPENROUTER_TEMPERATURE,
+    OPENROUTER_TOP_K,
+    OPENROUTER_TOP_P,
+    QWEN_MODEL,
+    GPT_MODEL,
 )
 
 # Set up logging
@@ -53,6 +63,75 @@ def get_gemini_client():
 
 
 _global_vertex_client = None
+
+_openrouter_client: Optional[AsyncOpenAI] = None
+
+
+def get_openrouter_client() -> AsyncOpenAI:
+    """Lazily initializes and returns the global OpenRouter client."""
+    global _openrouter_client  # noqa: PLW0603
+    if _openrouter_client is None:
+        if not OPENROUTER_API_KEY:
+            logger.error("OPENROUTER_API_KEY environment variable not set during client initialization.")
+            raise ValueError("OPENROUTER_API_KEY environment variable not set.")
+        logger.info("Initializing global OpenRouter client with API key.")
+        _openrouter_client = AsyncOpenAI(
+            base_url=OPENROUTER_BASE_URL,
+            api_key=OPENROUTER_API_KEY,
+            max_retries=0,
+        )
+    return _openrouter_client
+
+
+def parse_openrouter_content(content: str) -> dict[str, str]:
+    """Split OpenRouter reasoning output into analysis and final sections."""
+    pattern = re.compile(r"<\|start\|>assistant(?:Search [^<]*|)<\|channel\|>(\w+)<\|message\|>")
+    parts = re.split(pattern, content)
+    analysis_parts: List[str] = []
+    final_parts: List[str] = []
+
+    prefix = parts[0].strip()
+    if prefix:
+        final_parts.append(prefix)
+
+    for i in range(1, len(parts), 2):
+        channel = parts[i]
+        segment = parts[i + 1]
+        segment = re.sub(r"<\|.*?\|>", "", segment).strip()
+        segment = segment.replace("assistantSearch", "Search")
+        if channel in {"analysis", "commentary"}:
+            analysis_parts.append(segment)
+        else:
+            final_parts.append(segment)
+
+    if not final_parts and analysis_parts:
+        final_parts.append(analysis_parts.pop())
+
+    return {
+        "analysis": "\n".join(filter(None, analysis_parts)).strip(),
+        "final": "\n".join(filter(None, final_parts)).strip(),
+    }
+
+
+def parse_qwen_content(content: str) -> dict[str, str]:
+    """Split Qwen output into thought and final sections using <think> tags."""
+    match = re.search(r"<think>(.*?)</think>(.*)", content, re.DOTALL)
+    if match:
+        analysis = match.group(1).strip()
+        final = match.group(2).strip()
+    else:
+        analysis = ""
+        final = content.strip()
+    return {"analysis": analysis, "final": final}
+
+
+def _parse_openrouter_response(model_name: str, content: str) -> Union[dict[str, str], str]:
+    """Return parsed response based on the model type."""
+    if model_name == GPT_MODEL:
+        return parse_openrouter_content(content)
+    if model_name == QWEN_MODEL:
+        return parse_qwen_content(content)["final"]
+    return content
 
 
 def get_vertex_client():
@@ -1433,3 +1512,99 @@ async def generate_image_with_vertex(
     return generated_images_bytes[
         :number_of_images
     ]  # Ensure we don't return more than requested
+
+
+async def call_openrouter(
+    *,
+    system_prompt: str,
+    user_content: str,
+    image_data_list: Optional[List[bytes]] = None,
+    video_data: Optional[bytes] = None,
+    video_mime_type: Optional[str] = None,
+    use_pro_model: bool = False,
+    youtube_urls: Optional[List[str]] = None,
+    audio_data: Optional[bytes] = None,
+    audio_mime_type: Optional[str] = None,
+    model_name: str,
+) -> Optional[Union[dict[str, str], str]]:
+    """Call an OpenRouter model using the OpenAI SDK.
+
+    Retries without media if the model reports unsupported media types.
+    """
+
+    client = get_openrouter_client()
+
+    if youtube_urls:
+        user_content += "\n" + "\n".join(f"YouTube URL: {url}" for url in youtube_urls)
+
+    def build_messages(include_media: bool = True):
+        user_parts = [{"type": "text", "text": user_content}]
+        if include_media:
+            if image_data_list:
+                for img in image_data_list:
+                    b64 = base64.b64encode(img).decode("utf-8")
+                    user_parts.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+            if video_data:
+                b64 = base64.b64encode(video_data).decode("utf-8")
+                user_parts.append(
+                    {
+                        "type": "video_url",
+                        "video_url": {"url": f"data:video/mp4;base64,{b64}"}
+                    }
+                )
+            if audio_data:
+                b64 = base64.b64encode(audio_data).decode("utf-8")
+                user_parts.append(
+                    {
+                        "type": "audio_url",
+                        "audio_url": {"url": f"data:audio/mp3;base64,{b64}"}
+                    }
+                )
+
+        return [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+            {"role": "user", "content": user_parts},
+        ]
+
+    messages = build_messages(include_media=True)
+    try:
+        completion = await client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=OPENROUTER_TEMPERATURE,
+            top_p=OPENROUTER_TOP_P,
+            extra_body={"top_k": OPENROUTER_TOP_K},
+        )
+        return _parse_openrouter_response(model_name, completion.choices[0].message.content)
+    except RateLimitError as e:  # pragma: no cover - best effort
+        logger.error("Rate limit error calling OpenRouter model %s: %s", model_name, e)
+        return {
+            "final": f"Model {model_name} is currently rate-limited. Please try again later.",
+        }
+    except BadRequestError as e:
+        status = getattr(e, "status_code", None)
+        if status in {400, 415} or "media" in str(e).lower():
+            logger.warning(
+                "Model %s does not support provided media, retrying without media. Error: %s",
+                model_name,
+                e,
+            )
+            try:
+                completion = await client.chat.completions.create(
+                    model=model_name,
+                    messages=build_messages(include_media=False),
+                    temperature=OPENROUTER_TEMPERATURE,
+                    top_p=OPENROUTER_TOP_P,
+                    extra_body={"top_k": OPENROUTER_TOP_K},
+                )
+                return _parse_openrouter_response(model_name, completion.choices[0].message.content)
+            except OpenAIError as inner_e:  # pragma: no cover - best effort
+                logger.error(
+                    "Retry without media failed for model %s: %s", model_name, inner_e, exc_info=True
+                )
+                return None
+        logger.error("OpenRouter request failed for model %s: %s", model_name, e, exc_info=True)
+        return None
+    except OpenAIError as e:  # pragma: no cover - best effort
+        logger.error("Error calling OpenRouter model %s: %s", model_name, e, exc_info=True)
+        return None
