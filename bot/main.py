@@ -6,6 +6,7 @@ import sys
 
 from telegram.ext import (
     Application,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -25,6 +26,7 @@ from bot.handlers import (
     img_handler,
     load_whitelist,
     log_message,
+    model_selection_callback,
     paintme_handler,
     profileme_handler,
     deepseek_handler,
@@ -33,6 +35,8 @@ from bot.handlers import (
     gpt_handler,
     q_handler,
     start_handler,
+    start_periodic_cleanup,
+    stop_periodic_cleanup,
     support_handler,
     tldr_handler,
     vid_handler,
@@ -58,6 +62,13 @@ async def init_db_wrapper():
     logger.info("Whitelist cache loaded")
 
 
+async def post_init(application):
+    """Post-initialization tasks."""
+    # Start the periodic cleanup task
+    await start_periodic_cleanup(application.bot)
+    logger.info("Post-initialization completed")
+
+
 def main():
     """Main function to run the bot."""
     # Create the Application
@@ -80,6 +91,9 @@ def main():
     application.add_handler(CommandHandler("portraitme", paintme_handler))
     application.add_handler(CommandHandler("support", support_handler))
     
+    # Callback query handler for model selection
+    application.add_handler(CallbackQueryHandler(model_selection_callback))
+    
     # Handler for media groups
     application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_media_group), group=1)
 
@@ -89,6 +103,9 @@ def main():
     # Initialize database before starting
     loop = asyncio.get_event_loop()
     loop.run_until_complete(init_db_wrapper())
+    
+    # Post-initialization tasks
+    loop.run_until_complete(post_init(application))
     
     # Configure health check endpoint if using webhook
     if USE_WEBHOOK:        
@@ -113,7 +130,19 @@ if __name__ == "__main__":
         main()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
+        # Stop the cleanup task
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(stop_periodic_cleanup())
+        else:
+            loop.run_until_complete(stop_periodic_cleanup())
         sys.exit(0)
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
+        # Stop the cleanup task
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(stop_periodic_cleanup())
+        else:
+            loop.run_until_complete(stop_periodic_cleanup())
         sys.exit(1) 

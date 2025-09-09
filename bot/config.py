@@ -78,6 +78,7 @@ USE_VERTEX_IMAGE=os.getenv("USE_VERTEX_IMAGE", "false").lower() == "true"
 VERTEX_IMAGE_MODEL=os.getenv("VERTEX_IMAGE_MODEL")
 
 # OpenRouter settings
+ENABLE_OPENROUTER = os.getenv("ENABLE_OPENROUTER", "true").lower() == "true"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_TEMPERATURE = float(os.getenv("OPENROUTER_TEMPERATURE", "0.7"))
@@ -95,6 +96,9 @@ WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8443"))
 
 # Telegram rate limiting (seconds between requests)
 RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "15"))
+
+# Model selection timeout (seconds)
+MODEL_SELECTION_TIMEOUT = int(os.getenv("MODEL_SELECTION_TIMEOUT", "30"))
 
 # Telegram message length threshold (characters) before creating Telegraph page
 TELEGRAM_MAX_LENGTH = int(os.getenv("TELEGRAM_MAX_LENGTH", "4000"))

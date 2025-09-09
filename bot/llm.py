@@ -83,33 +83,31 @@ def get_openrouter_client() -> AsyncOpenAI:
     return _openrouter_client
 
 
-def parse_openrouter_content(content: str) -> dict[str, str]:
-    """Split OpenRouter reasoning output into analysis and final sections."""
-    pattern = re.compile(r"<\|start\|>assistant(?:Search [^<]*|)<\|channel\|>(\w+)<\|message\|>")
-    parts = re.split(pattern, content)
-    analysis_parts: List[str] = []
-    final_parts: List[str] = []
-
-    prefix = parts[0].strip()
-    if prefix:
-        final_parts.append(prefix)
-
-    for i in range(1, len(parts), 2):
-        channel = parts[i]
-        segment = parts[i + 1]
-        segment = re.sub(r"<\|.*?\|>", "", segment).strip()
-        segment = segment.replace("assistantSearch", "Search")
-        if channel in {"analysis", "commentary"}:
-            analysis_parts.append(segment)
-        else:
-            final_parts.append(segment)
-
-    if not final_parts and analysis_parts:
-        final_parts.append(analysis_parts.pop())
+def parse_gpt_content(content: str) -> dict[str, str]:
+    """Split OpenRouter GPT reasoning output into analysis and final sections."""
+    # Find the last <|message|> tag
+    last_message_pos = content.rfind("<|message|>")
+    
+    if last_message_pos == -1:
+        # No <|message|> tag found, treat entire content as final
+        analysis = ""
+        final = content
+    else:
+        # Split at the last <|message|> tag
+        analysis = content[:last_message_pos]
+        final = content[last_message_pos + len("<|message|>"):]
+    
+    # Clean up tags from both parts
+    analysis = re.sub(r"<\|.*?\|>", "", analysis).strip()
+    final = re.sub(r"<\|.*?\|>", "", final).strip()
+    
+    # Replace assistantSearch with Search in both parts
+    analysis = analysis.replace("assistantSearch", "Search")
+    final = final.replace("assistantSearch", "Search")
 
     return {
-        "analysis": "\n".join(filter(None, analysis_parts)).strip(),
-        "final": "\n".join(filter(None, final_parts)).strip(),
+        "analysis": analysis,
+        "final": final,
     }
 
 
@@ -128,9 +126,9 @@ def parse_qwen_content(content: str) -> dict[str, str]:
 def _parse_openrouter_response(model_name: str, content: str) -> Union[dict[str, str], str]:
     """Return parsed response based on the model type."""
     if model_name == GPT_MODEL:
-        return parse_openrouter_content(content)
+        return parse_gpt_content(content)
     if model_name == QWEN_MODEL:
-        return parse_qwen_content(content)["final"]
+        return parse_qwen_content(content)
     return content
 
 

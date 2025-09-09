@@ -17,15 +17,18 @@ from bs4 import BeautifulSoup
 from html2text import html2text
 from pycountry import languages
 from functools import partial
-from telegram import InputMediaPhoto, Update
+from telegram import InputMediaPhoto, Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from bot.config import (
     ACCESS_CONTROLLED_COMMANDS,
+    ENABLE_OPENROUTER,
     FACTCHECK_SYSTEM_PROMPT,
     GEMINI_IMAGE_MODEL,
+    MODEL_SELECTION_TIMEOUT,
+    OPENROUTER_API_KEY,
     PAINTME_SYSTEM_PROMPT,
     PORTRAIT_SYSTEM_PROMPT,
     PROFILEME_SYSTEM_PROMPT,
@@ -75,6 +78,54 @@ user_rate_limits: Dict[int, float] = {}
 # Whitelist cache - loaded once during startup
 _whitelist_cache: Optional[List[str]] = None
 _whitelist_loaded = False
+
+# Model selection callback data constants
+MODEL_CALLBACK_PREFIX = "model_select:"
+MODEL_GEMINI = "gemini"
+MODEL_LLAMA = "llama"
+MODEL_QWEN = "qwen"
+MODEL_DEEPSEEK = "deepseek"
+
+# Dictionary to store pending Q requests waiting for model selection
+pending_q_requests: Dict[str, Dict] = {}
+
+
+def is_openrouter_available() -> bool:
+    """Check if OpenRouter is enabled and API key is available."""
+    return ENABLE_OPENROUTER and OPENROUTER_API_KEY is not None and OPENROUTER_API_KEY.strip() != ""
+
+
+def create_model_selection_keyboard(has_media: bool = False) -> InlineKeyboardMarkup:
+    """Create inline keyboard for model selection.
+    
+    Args:
+        has_media: If True, only show Gemini and Llama options (media-capable models)
+        
+    Returns:
+        InlineKeyboardMarkup with model selection buttons
+    """
+    if has_media:
+        # Only show media-capable models
+        keyboard = [
+            [
+                InlineKeyboardButton("Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"),
+                InlineKeyboardButton("Llama 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_LLAMA}")
+            ]
+        ]
+    else:
+        # Show all models
+        keyboard = [
+            [
+                InlineKeyboardButton("Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"),
+                InlineKeyboardButton("Llama 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_LLAMA}")
+            ],
+            [
+                InlineKeyboardButton("Qwen 3", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_QWEN}"),
+                InlineKeyboardButton("DeepSeek 3.1", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_DEEPSEEK}")
+            ]
+        ]
+    
+    return InlineKeyboardMarkup(keyboard)
 
 
 def is_rate_limited(user_id: int) -> bool:
@@ -1133,6 +1184,247 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             pass
 
 
+async def process_q_request_with_gemini(
+    update: Update,
+    processing_message,
+    query: str,
+    original_query: str,
+    image_data_list: Optional[List[bytes]],
+    video_data: Optional[bytes],
+    video_mime_type: Optional[str],
+    audio_data: Optional[bytes],
+    audio_mime_type: Optional[str],
+    youtube_urls: Optional[List[str]]
+) -> None:
+    """Process Q request directly with Gemini (original behavior when OpenRouter is disabled)."""
+    try:
+        # Get language
+        language = languages.get(alpha_2=langid.classify(query)[0]).name
+
+        # Get username
+        username = "Anonymous"
+        if update.effective_sender:
+            sender = update.effective_message.from_user
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name and sender.last_name:
+                username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
+
+        # For database logging, use the original query
+        db_query_text = original_query
+        if update.effective_message.reply_to_message:
+            replied_text_original = (
+                update.effective_message.reply_to_message.text
+                or update.effective_message.reply_to_message.caption
+                or ""
+            )
+            if replied_text_original:
+                if db_query_text:
+                    db_query_text = f'Context from replied message: "{replied_text_original}"\n\nQuestion: {db_query_text}'
+                else:
+                    db_query_text = replied_text_original
+
+        # Log database entry
+        await queue_message_insert(
+            user_id=update.effective_message.from_user.id,
+            username=username,
+            text=f"Ask {TELEGRAPH_AUTHOR_NAME}: {db_query_text}",
+            language=language,
+            date=update.effective_message.date,
+            reply_to_message_id=(
+                update.effective_message.reply_to_message.message_id
+                if update.effective_message.reply_to_message
+                else None
+            ),
+            chat_id=update.effective_chat.id,
+            message_id=update.effective_message.message_id,
+        )
+
+        # Prepare system prompt
+        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
+        system_prompt = Q_SYSTEM_PROMPT.format(
+            current_datetime=current_datetime, language=language
+        )
+        
+        # Determine if pro model should be used
+        use_pro_model = bool(
+            video_data or image_data_list or audio_data or youtube_urls
+        )
+
+        # Call Gemini
+        response = await call_gemini(
+            system_prompt=system_prompt,
+            user_content=query,
+            image_data_list=image_data_list if image_data_list else None,
+            video_data=video_data,
+            video_mime_type=video_mime_type,
+            use_pro_model=use_pro_model,
+            youtube_urls=youtube_urls,
+            audio_data=audio_data,
+            audio_mime_type=audio_mime_type,
+        )
+
+        if response:
+            resp_text = response if isinstance(response, str) else response.get("final", "")
+            await send_response(
+                processing_message,
+                resp_text,
+                "Answer to Your Question",
+                ParseMode.MARKDOWN,
+            )
+        else:
+            await processing_message.edit_text(
+                "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
+            )
+
+    except Exception as e:
+        logger.error("Error in process_q_request_with_gemini: %s", e, exc_info=True)
+        try:
+            await processing_message.edit_text(f"Error processing your question: {str(e)}")
+        except Exception:
+            pass
+
+
+async def process_q_request_with_specific_model(
+    update: Update,
+    processing_message,
+    query: str,
+    original_query: str,
+    image_data_list: Optional[List[bytes]],
+    video_data: Optional[bytes],
+    video_mime_type: Optional[str],
+    audio_data: Optional[bytes],
+    audio_mime_type: Optional[str],
+    youtube_urls: Optional[List[str]],
+    call_model,
+    model_name: Optional[str]
+) -> None:
+    """Process Q request with a specific model."""
+    try:
+        # Get language
+        language = languages.get(alpha_2=langid.classify(query)[0]).name
+
+        # Get username
+        username = "Anonymous"
+        if update.effective_sender:
+            sender = update.effective_message.from_user
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name and sender.last_name:
+                username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
+
+        # For database logging, use the original query
+        db_query_text = original_query
+        if update.effective_message.reply_to_message:
+            replied_text_original = (
+                update.effective_message.reply_to_message.text
+                or update.effective_message.reply_to_message.caption
+                or ""
+            )
+            if replied_text_original:
+                if db_query_text:
+                    db_query_text = f'Context from replied message: "{replied_text_original}"\n\nQuestion: {db_query_text}'
+                else:
+                    db_query_text = replied_text_original
+
+        # Log database entry
+        await queue_message_insert(
+            user_id=update.effective_message.from_user.id,
+            username=username,
+            text=f"Ask {TELEGRAPH_AUTHOR_NAME}: {db_query_text}",
+            language=language,
+            date=update.effective_message.date,
+            reply_to_message_id=(
+                update.effective_message.reply_to_message.message_id
+                if update.effective_message.reply_to_message
+                else None
+            ),
+            chat_id=update.effective_chat.id,
+            message_id=update.effective_message.message_id,
+        )
+
+        # Prepare system prompt
+        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
+        system_prompt = Q_SYSTEM_PROMPT.format(
+            current_datetime=current_datetime, language=language
+        )
+        
+        # Determine if pro model should be used
+        use_pro_model = bool(
+            video_data or image_data_list or audio_data or youtube_urls
+        )
+
+        # Handle media inclusion based on model
+        include_media = model_name == LLAMA_MODEL
+        if not include_media:
+            # For non-media models, clear media data except YouTube URLs
+            temp_image_data_list = None
+            temp_video_data = None
+            temp_audio_data = None
+            temp_video_mime_type = None
+            temp_audio_mime_type = None
+            use_pro_model = bool(youtube_urls)
+        else:
+            temp_image_data_list = image_data_list
+            temp_video_data = video_data
+            temp_audio_data = audio_data
+            temp_video_mime_type = video_mime_type
+            temp_audio_mime_type = audio_mime_type
+
+        # Call the specified model
+        response = await call_model(
+            system_prompt=system_prompt,
+            user_content=query,
+            image_data_list=temp_image_data_list if temp_image_data_list else None,
+            video_data=temp_video_data,
+            video_mime_type=temp_video_mime_type,
+            use_pro_model=use_pro_model,
+            youtube_urls=youtube_urls,
+            audio_data=temp_audio_data,
+            audio_mime_type=temp_audio_mime_type,
+        )
+
+        if response:
+            if model_name == GPT_MODEL and isinstance(response, dict):
+                analysis = response.get("analysis")
+                final = response.get("final") or ""
+                resp_text = ""
+                if analysis:
+                    resp_text += f"*Thought process*\n{analysis}\n\n"
+                resp_text += f"*Final answer*\n{final}"
+            else:
+                resp_text = response if isinstance(response, str) else response.get("final", "")
+            
+            if model_name:
+                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
+            
+            await send_response(
+                processing_message,
+                resp_text,
+                "Answer to Your Question",
+                ParseMode.MARKDOWN,
+            )
+        else:
+            await processing_message.edit_text(
+                "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
+            )
+
+    except Exception as e:
+        logger.error("Error in process_q_request_with_specific_model: %s", e, exc_info=True)
+        try:
+            await processing_message.edit_text(f"Error processing your question: {str(e)}")
+        except Exception:
+            pass
+
+
 async def q_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -1363,40 +1655,60 @@ async def q_handler(
             # Extract YouTube URLs and replace in text
             query, youtube_urls = extract_youtube_urls(query)
 
-        processing_message_text = "Processing your question..."
-        if video_data:
-            processing_message_text = "Analyzing video and processing your question..."
-        elif audio_data:
-            processing_message_text = "Analyzing audio and processing your question..."
-        elif image_data_list:
-            processing_message_text = f"Analyzing {len(image_data_list)} image(s) and processing your question..."
-        elif youtube_urls and len(youtube_urls) > 0:
-            processing_message_text = f"Analyzing {len(youtube_urls)} YouTube video(s) and processing your question..."
+        # Check if a specific model is requested or if OpenRouter is not available
+        if call_model is not None or not is_openrouter_available():
+            # Specific model requested or OpenRouter is disabled - process directly
+            processing_message_text = "Processing your question..."
+            if model_name:
+                processing_message_text = f"Processing your question with {model_name}..."
+            
+            if video_data:
+                processing_message_text = processing_message_text.replace("Processing", "Analyzing video and processing")
+            elif audio_data:
+                processing_message_text = processing_message_text.replace("Processing", "Analyzing audio and processing")
+            elif image_data_list:
+                processing_message_text = processing_message_text.replace("Processing", f"Analyzing {len(image_data_list)} image(s) and processing")
+            elif youtube_urls and len(youtube_urls) > 0:
+                processing_message_text = processing_message_text.replace("Processing", f"Analyzing {len(youtube_urls)} YouTube video(s) and processing")
 
-        if telegraph_contents:
-            telegraph_media_info = ""
-            if any(content.get("image_urls") for content in telegraph_contents):
-                image_count = sum(
-                    len(content.get("image_urls", [])) for content in telegraph_contents
+            processing_message = await update.effective_message.reply_text(
+                processing_message_text
+            )
+            
+            # Process directly with specified model or Gemini
+            if call_model is not None:
+                await process_q_request_with_specific_model(
+                    update, processing_message, query, original_query, 
+                    image_data_list, video_data, video_mime_type,
+                    audio_data, audio_mime_type, youtube_urls,
+                    call_model, model_name
                 )
-                telegraph_media_info += f" with {image_count} image(s)"
-            if any(content.get("video_urls") for content in telegraph_contents):
-                video_count = sum(
-                    len(content.get("video_urls", [])) for content in telegraph_contents
-                )
-                telegraph_media_info += (
-                    f" and {video_count} video(s)"
-                    if telegraph_media_info
-                    else f" with {video_count} video(s)"
-                )
-
-            if processing_message_text == "Processing your question...":
-                processing_message_text = f"Extracting content from {len(telegraph_contents)} Telegraph page(s){telegraph_media_info} and processing your question..."
             else:
-                processing_message_text = f"{processing_message_text[:-3]} and {len(telegraph_contents)} Telegraph page(s){telegraph_media_info}..."
-
-        processing_message = await update.effective_message.reply_text(
-            processing_message_text
+                # OpenRouter not available, use Gemini
+                await process_q_request_with_gemini(
+                    update, processing_message, query, original_query, 
+                    image_data_list, video_data, video_mime_type,
+                    audio_data, audio_mime_type, youtube_urls
+                )
+            return
+        
+        # OpenRouter is available - show model selection
+        # Check if media is present to determine which models to show
+        has_media = bool(video_data or image_data_list or audio_data or youtube_urls)
+        
+        # Create model selection keyboard
+        keyboard = create_model_selection_keyboard(has_media)
+        
+        # Create selection message text
+        selection_text = "Please select which AI model to use for your question:"
+        if has_media:
+            selection_text += "\n\n*Note: Only models that support media are shown.*"
+        
+        # Send model selection message
+        selection_message = await update.effective_message.reply_text(
+            selection_text,
+            reply_markup=keyboard,
+            parse_mode=ParseMode.MARKDOWN
         )
 
         if not language:
@@ -1428,8 +1740,38 @@ async def q_handler(
                 else:
                     db_query_text = replied_text_original
 
+        # Store request context for later processing after model selection
+        request_key = f"{update.effective_chat.id}_{update.effective_message.from_user.id}_{selection_message.message_id}"
+        pending_q_requests[request_key] = {
+            "user_id": update.effective_message.from_user.id,
+            "username": username,
+            "query": query,
+            "original_query": original_query,
+            "db_query_text": db_query_text,
+            "language": language,
+            "image_data_list": image_data_list,
+            "video_data": video_data,
+            "video_mime_type": video_mime_type,
+            "audio_data": audio_data,
+            "audio_mime_type": audio_mime_type,
+            "youtube_urls": youtube_urls,
+            "telegraph_contents": telegraph_contents,
+            "date": update.effective_message.date,
+            "reply_to_message_id": (
+                update.effective_message.reply_to_message.message_id
+                if update.effective_message.reply_to_message
+                else None
+            ),
+            "chat_id": update.effective_chat.id,
+            "message_id": update.effective_message.message_id,
+            "selection_message_id": selection_message.message_id,
+            "original_user_id": update.effective_message.from_user.id,  # Store original user for validation
+            "timestamp": time.time()  # For timeout handling
+        }
+
+        # Log database entry
         await queue_message_insert(
-            user_id=update.effective_message.from_user.id,  # Use from_user here
+            user_id=update.effective_message.from_user.id,
             username=username,
             text=f"Ask {TELEGRAPH_AUTHOR_NAME}: {db_query_text}",
             language=language,
@@ -1442,60 +1784,6 @@ async def q_handler(
             chat_id=update.effective_chat.id,
             message_id=update.effective_message.message_id,
         )
-
-        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
-        system_prompt = Q_SYSTEM_PROMPT.format(
-            current_datetime=current_datetime, language=language
-        )
-        use_pro_model = bool(
-            video_data or image_data_list or audio_data or youtube_urls
-        )  # Use Pro model if media is present
-
-        include_media = model_name == LLAMA_MODEL
-        if call_model and not include_media:
-            image_data_list = None
-            video_data = None
-            audio_data = None
-            video_mime_type = None
-            audio_mime_type = None
-            use_pro_model = bool(youtube_urls)
-
-        if call_model is None:
-            call_model = call_gemini
-        response = await call_model(
-            system_prompt=system_prompt,
-            user_content=query,
-            image_data_list=image_data_list if image_data_list else None,
-            video_data=video_data,
-            video_mime_type=video_mime_type,
-            use_pro_model=use_pro_model,
-            youtube_urls=youtube_urls,
-            audio_data=audio_data,
-            audio_mime_type=audio_mime_type,
-        )
-
-        if response:
-            if model_name == GPT_MODEL and isinstance(response, dict):
-                analysis = response.get("analysis")
-                final = response.get("final") or ""
-                resp_text = ""
-                if analysis:
-                    resp_text += f"*Thought process*\n{analysis}\n\n"
-                resp_text += f"*Final answer*\n{final}"
-            else:
-                resp_text = response if isinstance(response, str) else response.get("final", "")
-            if model_name:
-                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
-            await send_response(
-                processing_message,
-                resp_text,
-                "Answer to Your Question",
-                ParseMode.MARKDOWN,
-            )
-        else:
-            await processing_message.edit_text(
-                "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
-            )
     except Exception as e:  # noqa: BLE001
         logger.error("Error in q_handler: %s", e, exc_info=True)
         try:
@@ -1506,7 +1794,243 @@ async def q_handler(
             pass
 
 
+async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle model selection callback from inline keyboard."""
+    query = update.callback_query
+    if not query or not query.data:
+        return
+
+    # Answer the callback query to remove loading state
+    await query.answer()
+
+    # Check if this is a model selection callback
+    if not query.data.startswith(MODEL_CALLBACK_PREFIX):
+        return
+
+    # Extract selected model
+    selected_model = query.data[len(MODEL_CALLBACK_PREFIX):]
+    
+    # Get request key from message info
+    chat_id = query.message.chat.id
+    message_id = query.message.message_id
+    user_id = query.from_user.id
+    
+    # Find the matching request
+    request_key = None
+    request_data = None
+    for key, data in pending_q_requests.items():
+        if (data["chat_id"] == chat_id and 
+            data["selection_message_id"] == message_id):
+            request_key = key
+            request_data = data
+            break
+    
+    if not request_data:
+        await query.edit_message_text("Oops! This request has vanished into the void. Maybe it went for a coffee break ☕️.")
+        return
+    
+    # Check if the user clicking is the original requester
+    if request_data["original_user_id"] != user_id:
+        await query.answer("Hey! No cookie stealing allowed. Only the original baker can eat this one. 🍪", show_alert=True)
+        return
+    
+    # Check timeout (configurable via MODEL_SELECTION_TIMEOUT)
+    if time.time() - request_data["timestamp"] > MODEL_SELECTION_TIMEOUT:
+        # Remove expired request
+        del pending_q_requests[request_key]
+        await query.edit_message_text("Too slow! This request has turned into a pumpkin. Please try again before midnight 🎃.")
+        return
+    
+    # Remove the request from pending list
+    del pending_q_requests[request_key]
+    
+    try:
+        # Update the selection message to show processing
+        processing_text = f"Processing your question with {get_model_display_name(selected_model)}..."
+        if request_data.get("video_data"):
+            processing_text = f"Analyzing video and processing your question with {get_model_display_name(selected_model)}..."
+        elif request_data.get("audio_data"):
+            processing_text = f"Analyzing audio and processing your question with {get_model_display_name(selected_model)}..."
+        elif request_data.get("image_data_list"):
+            processing_text = f"Analyzing {len(request_data['image_data_list'])} image(s) and processing your question with {get_model_display_name(selected_model)}..."
+        elif request_data.get("youtube_urls") and len(request_data["youtube_urls"]) > 0:
+            processing_text = f"Analyzing {len(request_data['youtube_urls'])} YouTube video(s) and processing your question with {get_model_display_name(selected_model)}..."
+        
+        await query.edit_message_text(processing_text)
+        
+        # Get model function and name based on selection
+        call_model, model_name = get_model_function_and_name(selected_model)
+        
+        # Prepare system prompt
+        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
+        system_prompt = Q_SYSTEM_PROMPT.format(
+            current_datetime=current_datetime, 
+            language=request_data["language"]
+        )
+        
+        # Determine if pro model should be used
+        use_pro_model = bool(
+            request_data.get("video_data") or 
+            request_data.get("image_data_list") or 
+            request_data.get("audio_data") or 
+            request_data.get("youtube_urls")
+        )
+        
+        # Handle media inclusion based on model
+        image_data_list = request_data.get("image_data_list")
+        video_data = request_data.get("video_data")
+        audio_data = request_data.get("audio_data")
+        video_mime_type = request_data.get("video_mime_type")
+        audio_mime_type = request_data.get("audio_mime_type")
+        
+        include_media = model_name == LLAMA_MODEL
+        if not include_media and selected_model not in [MODEL_GEMINI, MODEL_LLAMA]:
+            # For non-media models, clear media data
+            image_data_list = None
+            video_data = None
+            audio_data = None
+            video_mime_type = None
+            audio_mime_type = None
+            use_pro_model = bool(request_data.get("youtube_urls"))
+        
+        # Call the selected model
+        response = await call_model(
+            system_prompt=system_prompt,
+            user_content=request_data["query"],
+            image_data_list=image_data_list,
+            video_data=video_data,
+            video_mime_type=video_mime_type,
+            use_pro_model=use_pro_model,
+            youtube_urls=request_data.get("youtube_urls"),
+            audio_data=audio_data,
+            audio_mime_type=audio_mime_type,
+        )
+        
+        if response:
+            if model_name == GPT_MODEL and isinstance(response, dict):
+                analysis = response.get("analysis")
+                final = response.get("final") or ""
+                resp_text = ""
+                if analysis:
+                    resp_text += f"*Thought process*\n{analysis}\n\n"
+                resp_text += f"*Final answer*\n{final}"
+            else:
+                resp_text = response if isinstance(response, str) else response.get("final", "")
+            
+            if model_name:
+                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
+            
+            # Send response using the processing message
+            await send_response(
+                query.message,
+                resp_text,
+                "Answer to Your Question",
+                ParseMode.MARKDOWN,
+            )
+        else:
+            await query.edit_message_text(
+                "I couldn't find an answer to your question. Please try rephrasing or asking something else."
+            )
+            
+    except Exception as e:
+        logger.error("Error in model_selection_callback: %s", e, exc_info=True)
+        try:
+            await query.edit_message_text(f"Error processing your question: {str(e)}")
+        except Exception:
+            pass
+
+
+def get_model_display_name(model_key: str) -> str:
+    """Get display name for model key."""
+    display_names = {
+        MODEL_GEMINI: "Gemini 2.5 ✨",
+        MODEL_LLAMA: "Llama 4",
+        MODEL_QWEN: "Qwen 3",
+        MODEL_DEEPSEEK: "DeepSeek 3.1"
+    }
+    return display_names.get(model_key, model_key)
+
+
+def get_model_function_and_name(model_key: str) -> tuple:
+    """Get model function and name for the given model key."""
+    if model_key == MODEL_GEMINI:
+        return call_gemini, None  # Default Gemini model
+    elif model_key == MODEL_LLAMA:
+        return partial(call_openrouter, model_name=LLAMA_MODEL), LLAMA_MODEL
+    elif model_key == MODEL_QWEN:
+        return partial(call_openrouter, model_name=QWEN_MODEL), QWEN_MODEL
+    elif model_key == MODEL_DEEPSEEK:
+        return partial(call_openrouter, model_name=DEEPSEEK_MODEL), DEEPSEEK_MODEL
+    else:
+        return call_gemini, None  # Default fallback
+
+
+async def cleanup_expired_requests(bot=None):
+    """Clean up expired pending Q requests (older than MODEL_SELECTION_TIMEOUT seconds) and delete messages."""
+    current_time = time.time()
+    expired_keys = []
+    
+    for key, request_data in pending_q_requests.items():
+        if current_time - request_data["timestamp"] > MODEL_SELECTION_TIMEOUT:  # Configurable timeout
+            expired_keys.append((key, request_data))
+    
+    for key, request_data in expired_keys:
+        try:
+            # Delete the selection message if bot is available
+            if bot and "chat_id" in request_data and "selection_message_id" in request_data:
+                await bot.delete_message(
+                    chat_id=request_data["chat_id"],
+                    message_id=request_data["selection_message_id"]
+                )
+                logger.info("Deleted expired model selection message: %s", request_data['selection_message_id'])
+        except Exception as e:
+            logger.warning("Failed to delete expired message %s: %s", request_data.get('selection_message_id'), e)
+        
+        # Remove from pending requests
+        del pending_q_requests[key]
+        logger.info("Cleaned up expired Q request: %s", key)
+    
+    return len(expired_keys)
+
+
+# Global variable to control the cleanup task
+_cleanup_task = None
+
+
+async def periodic_cleanup_task(bot):
+    """Periodically clean up expired requests every 5 seconds."""
+    while True:
+        try:
+            await asyncio.sleep(5)  # Wait 5 seconds
+            cleaned_count = await cleanup_expired_requests(bot)
+            if cleaned_count > 0:
+                logger.debug("Periodic cleanup: removed %s expired requests", cleaned_count)
+        except Exception as e:
+            logger.error("Error in periodic cleanup task: %s", e, exc_info=True)
+
+
+async def start_periodic_cleanup(bot):
+    """Start the periodic cleanup task."""
+    global _cleanup_task
+    if _cleanup_task is None or _cleanup_task.done():
+        _cleanup_task = asyncio.create_task(periodic_cleanup_task(bot))
+        logger.info("Started periodic cleanup task for model selection timeouts")
+
+
+async def stop_periodic_cleanup():
+    """Stop the periodic cleanup task."""
+    global _cleanup_task
+    if _cleanup_task and not _cleanup_task.done():
+        _cleanup_task.cancel()
+        try:
+            await _cleanup_task
+        except asyncio.CancelledError:
+            pass
+        logger.info("Stopped periodic cleanup task")
+
+
 async def deepseek_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /deepseek command."""
     await q_handler(
         update,
         context,
@@ -1516,6 +2040,7 @@ async def deepseek_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def qwen_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /qwen command."""
     await q_handler(
         update,
         context,
@@ -1525,6 +2050,7 @@ async def qwen_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 
 async def llama_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /llama command."""
     await q_handler(
         update,
         context,
@@ -1534,6 +2060,7 @@ async def llama_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def gpt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /gpt command."""
     await q_handler(
         update,
         context,
@@ -2371,8 +2898,6 @@ async def support_handler(
         return
 
     # Create the support message with inline keyboard
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-
     # Create inline keyboard with Ko-fi link button
     keyboard = [[InlineKeyboardButton("投喂", url=SUPPORT_LINK)]]
     reply_markup = InlineKeyboardMarkup(keyboard)

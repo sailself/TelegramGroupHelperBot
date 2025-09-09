@@ -1,6 +1,100 @@
-﻿# Summary of Changes for Google Search Grounding Implementation
+﻿# Summary of Changes for TelegramGroupHelperBot
 
-This document outlines the changes made to implement Google Search grounding in the TelegramGroupHelperBot.
+This document outlines the major changes and improvements made to the TelegramGroupHelperBot.
+
+# Multi-Model AI Integration with Interactive Selection
+
+## Core Changes
+
+### Interactive Model Selection Interface (bot/handlers.py)
+
+1. **Model Selection Buttons**:
+   - Implemented interactive inline keyboard with 4 AI model options
+   - Added smart filtering to show only media-capable models when media is present
+   - Created callback handler for button interactions with user validation
+   - Added configurable timeout system (30 seconds default) with automatic cleanup
+
+2. **Enhanced Q Handler**:
+   - Modified `/q` command to show model selection interface when OpenRouter is available
+   - Added fallback to Gemini-only mode when OpenRouter is disabled/unavailable
+   - Implemented request context storage for processing after model selection
+   - Added proactive message cleanup every 5 seconds to remove expired selections
+
+3. **Model-Specific Commands**:
+   - Restored `/deepseek`, `/qwen`, `/llama`, and `/gpt` commands to work with specific models
+   - Each command bypasses selection interface and processes directly with chosen model
+   - Maintained backward compatibility with existing command structure
+
+### Configuration Enhancements (bot/config.py)
+
+1. **New OpenRouter Settings**:
+   - Added `ENABLE_OPENROUTER` toggle for enabling/disabling multi-model selection
+   - Added `MODEL_SELECTION_TIMEOUT` for configurable selection timeout (default: 30 seconds)
+   - Enhanced OpenRouter model configuration with proper fallback handling
+
+2. **Smart Fallback Logic**:
+   - Automatic detection of OpenRouter availability (API key + enabled flag)
+   - Graceful degradation to Gemini-only mode when OpenRouter is unavailable
+   - Cost control through configurable OpenRouter disable option
+
+### Proactive Cleanup System (bot/main.py, bot/handlers.py)
+
+1. **Background Cleanup Task**:
+   - Implemented periodic cleanup task running every 5 seconds
+   - Automatic deletion of expired model selection messages from Telegram
+   - Memory cleanup of expired request contexts
+   - Graceful task lifecycle management (start/stop with bot)
+
+2. **Enhanced User Experience**:
+   - Fun timeout messages with emojis ("turned into a pumpkin 🎃", "cookie stealing 🍪")
+   - Clean chat history with automatic message removal
+   - User-specific button access (prevents hijacking)
+   - Responsive interface with immediate feedback
+
+### Technical Improvements
+
+1. **Callback Query Handling**:
+   - Comprehensive callback data validation and parsing
+   - User authorization checks for button interactions
+   - Timeout validation with automatic cleanup
+   - Error handling for edge cases (deleted messages, network issues)
+
+2. **Request Context Management**:
+   - Efficient storage and retrieval of pending requests
+   - Complete context preservation (media, text, user info, timestamps)
+   - Memory-efficient cleanup of expired contexts
+   - Thread-safe operations for concurrent requests
+
+## Migration Requirements
+
+Users should:
+
+1. **Optional Configuration Updates**:
+   - Add `ENABLE_OPENROUTER=true/false` to control model selection interface
+   - Add `MODEL_SELECTION_TIMEOUT=30` to customize selection timeout
+   - Configure OpenRouter API key and model identifiers for multi-model support
+
+2. **Backward Compatibility**:
+   - All existing commands continue to work unchanged
+   - Default behavior maintains model selection (when OpenRouter is configured)
+   - Graceful fallback ensures functionality even without OpenRouter setup
+
+3. **No Breaking Changes**:
+   - Existing `/q` usage works with new interface
+   - Model-specific commands restored to original functionality
+   - Database schema unchanged - no migrations required
+
+## Performance and Reliability
+
+The multi-model integration provides:
+
+1. **Enhanced User Experience**: Interactive model selection with visual feedback and automatic cleanup
+2. **Improved Performance**: Background cleanup prevents memory leaks and chat clutter
+3. **Cost Control**: Configurable OpenRouter integration allows cost management
+4. **Reliability**: Comprehensive error handling and graceful fallbacks
+5. **Scalability**: Efficient request management and cleanup systems
+
+# Previous Changes
 
 ## Core Changes
 

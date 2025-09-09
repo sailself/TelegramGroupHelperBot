@@ -6,7 +6,9 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
-- **Question Answering**: Ask questions with `/q <your question>` and receive factual, search-grounded answers
+- **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 2.5 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
+- **Model-Specific Commands**: Direct access to specific models with `/deepseek`, `/qwen`, `/llama`, and `/gpt` commands
+- **Smart Model Selection**: Automatic filtering to show only media-capable models (Gemini, Llama) when images, videos, or audio are present
 - **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
 - **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
 - **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
@@ -15,6 +17,8 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **Database Logging**: Messages are stored in a database for summarization and analysis
 - **Multi-language Support**: Automatically detects and responds in the same language as the query
 - **Support Integration**: Customizable support message with Ko-fi link for tip collection
+- **Proactive Cleanup**: Automatic cleanup of expired model selection messages every 5 seconds
+- **OpenRouter Integration**: Configurable support for OpenRouter models with fallback to Gemini-only mode
 
 ## Requirements
 
@@ -43,10 +47,11 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
    pip install -r requirements.txt
    ```
 
-4. Copy the example environment file and edit it with your credentials:
+4. Create a `.env` file with your configuration (see Configuration section below for all options):
    ```bash
-   cp .env.example .env
-   # Edit .env with your Telegram Bot Token, Gemini API key, Telegraph settings, and CWD.PW API key
+   # Copy and customize the configuration template
+   touch .env
+   # Edit .env with your Telegram Bot Token, Gemini API key, and optional settings
    ```
 
 5. Run the database migrations:
@@ -66,6 +71,14 @@ Configure the bot by editing the `.env` file:
 ### Required settings:
 - `BOT_TOKEN`: Your Telegram Bot token from BotFather
 - `GEMINI_API_KEY`: Google Gemini API key
+
+### OpenRouter settings (Optional):
+- `ENABLE_OPENROUTER`: Enable/disable OpenRouter model selection (default: "true")
+- `OPENROUTER_API_KEY`: Your OpenRouter API key for accessing Llama, Qwen, DeepSeek, and GPT models
+- `DEEPSEEK_MODEL`: DeepSeek model identifier (e.g., "deepseek/deepseek-v3")
+- `QWEN_MODEL`: Qwen model identifier (e.g., "qwen/qwen-2.5-72b-instruct")
+- `LLAMA_MODEL`: Llama model identifier (e.g., "meta-llama/llama-3.1-405b-instruct")
+- `GPT_MODEL`: GPT model identifier (e.g., "openai/gpt-4o")
 
 ### Telegraph settings:
 - `TELEGRAM_MAX_LENGTH`: Maximum character length before using Telegraph (default: 4000)
@@ -88,6 +101,7 @@ Configure the bot by editing the `.env` file:
 - `USE_WEBHOOK`: Whether to use webhook mode (default: false)
 - `WEBHOOK_URL`: URL for the webhook in production
 - `RATE_LIMIT_SECONDS`: Rate limiting between user requests (default: 15)
+- `MODEL_SELECTION_TIMEOUT`: Timeout for model selection in seconds (default: 30)
 - `GEMINI_MODEL`: Gemini model to use for general text tasks (default: gemini-pro)
 - `GEMINI_PRO_MODEL`: Gemini Pro model for more complex tasks, including media analysis (default: gemini-2.5-pro-exp-03-25)
 - `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-2.0-flash-exp-image-generation)
@@ -100,6 +114,45 @@ Configure the bot by editing the `.env` file:
 - `VERTEX_IMAGE_MODEL`: The specific Vertex AI image generation model to use (e.g., `imagegeneration@006`).
 - `USE_VERTEX_VIDEO`: Set to "true" to use Vertex AI for video generation via the `/vid` command (default: "false", currently uses Gemini VEO).
 - `VERTEX_VIDEO_MODEL`: The specific Vertex AI video generation model to use if `USE_VERTEX_VIDEO` is true.
+
+## Example Configuration
+
+Here's a sample `.env` file with common configurations:
+
+### Minimal Configuration (Gemini-only)
+```env
+# Required settings
+BOT_TOKEN=your_telegram_bot_token_here
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Disable OpenRouter for cost control
+ENABLE_OPENROUTER=false
+```
+
+### Full Multi-Model Configuration
+```env
+# Required settings
+BOT_TOKEN=your_telegram_bot_token_here
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# Multi-model support
+ENABLE_OPENROUTER=true
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+DEEPSEEK_MODEL=deepseek/deepseek-v3
+QWEN_MODEL=qwen/qwen-2.5-72b-instruct
+LLAMA_MODEL=meta-llama/llama-3.1-405b-instruct
+GPT_MODEL=openai/gpt-4o
+
+# Customization
+MODEL_SELECTION_TIMEOUT=60
+TELEGRAM_MAX_LENGTH=4000
+RATE_LIMIT_SECONDS=10
+
+# Optional features
+TELEGRAPH_ACCESS_TOKEN=your_telegraph_token
+CWD_PW_API_KEY=your_cwd_pw_api_key
+SUPPORT_LINK=https://ko-fi.com/yourusername
+```
 
 ## Deployment
 
@@ -165,6 +218,28 @@ This bot uses Google's Gemini AI with Google Search grounding to ensure response
 2. Grounds its response in the search results
 3. Provides a factual, up-to-date answer
 4. Includes citations where appropriate
+
+## Multi-Model AI Integration
+
+The bot provides flexible AI model selection through an intuitive interface:
+
+### Interactive Model Selection
+- **Smart Interface**: Use `/q <question>` to get interactive buttons for model selection
+- **4 AI Models**: Choose from Gemini 2.5 ✨, Llama 4, Qwen 3, and DeepSeek 3.1
+- **Media-Aware**: When images, videos, or audio are present, only media-capable models (Gemini, Llama) are shown
+- **User-Specific**: Only the original requester can select the model (prevents button hijacking)
+- **Auto-Timeout**: Selection expires after 30 seconds (configurable) with automatic message cleanup
+
+### Direct Model Access
+- **`/deepseek <question>`**: Use DeepSeek model directly
+- **`/qwen <question>`**: Use Qwen model directly  
+- **`/llama <question>`**: Use Llama model directly
+- **`/gpt <question>`**: Use GPT model directly
+
+### OpenRouter Fallback
+- **Flexible Configuration**: Can be disabled via `ENABLE_OPENROUTER=false`
+- **Graceful Fallback**: Automatically uses Gemini-only mode when OpenRouter is unavailable
+- **Cost Control**: Disable OpenRouter to avoid API costs while keeping full functionality
 
 ## Image Understanding
 
