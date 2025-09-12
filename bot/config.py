@@ -100,6 +100,9 @@ RATE_LIMIT_SECONDS = int(os.getenv("RATE_LIMIT_SECONDS", "15"))
 # Model selection timeout (seconds)
 MODEL_SELECTION_TIMEOUT = int(os.getenv("MODEL_SELECTION_TIMEOUT", "30"))
 
+# Default model for /q when no selection is made
+DEFAULT_Q_MODEL = os.getenv("DEFAULT_Q_MODEL", "gemini").lower()
+
 # Telegram message length threshold (characters) before creating Telegraph page
 TELEGRAM_MAX_LENGTH = int(os.getenv("TELEGRAM_MAX_LENGTH", "4000"))
 

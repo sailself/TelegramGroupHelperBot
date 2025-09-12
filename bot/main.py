@@ -20,23 +20,21 @@ from bot.config import (
 )
 from bot.db.database import init_db
 from bot.handlers import (
+    deepseek_handler,
     factcheck_handler,
+    gpt_handler,
     handle_media_group,
     help_handler,
     img_handler,
+    llama_handler,
     load_whitelist,
     log_message,
     model_selection_callback,
     paintme_handler,
     profileme_handler,
-    deepseek_handler,
-    qwen_handler,
-    llama_handler,
-    gpt_handler,
     q_handler,
+    qwen_handler,
     start_handler,
-    start_periodic_cleanup,
-    stop_periodic_cleanup,
     support_handler,
     tldr_handler,
     vid_handler,
@@ -64,8 +62,6 @@ async def init_db_wrapper():
 
 async def post_init(application):
     """Post-initialization tasks."""
-    # Start the periodic cleanup task
-    await start_periodic_cleanup(application.bot)
     logger.info("Post-initialization completed")
 
 
@@ -130,19 +126,7 @@ if __name__ == "__main__":
         main()
     except (KeyboardInterrupt, SystemExit):
         logger.info("Bot stopped")
-        # Stop the cleanup task
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(stop_periodic_cleanup())
-        else:
-            loop.run_until_complete(stop_periodic_cleanup())
         sys.exit(0)
     except Exception as e:
         logger.error(f"Unhandled exception: {e}", exc_info=True)
-        # Stop the cleanup task
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(stop_periodic_cleanup())
-        else:
-            loop.run_until_complete(stop_periodic_cleanup())
-        sys.exit(1) 
+        sys.exit(1)

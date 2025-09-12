@@ -7,6 +7,7 @@ import os
 import re
 import time
 from datetime import datetime
+from functools import partial
 from io import BytesIO
 from typing import Dict, List, Optional
 
@@ -16,28 +17,28 @@ import requests
 from bs4 import BeautifulSoup
 from html2text import html2text
 from pycountry import languages
-from functools import partial
-from telegram import InputMediaPhoto, Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from bot.config import (
     ACCESS_CONTROLLED_COMMANDS,
+    DEEPSEEK_MODEL,
+    DEFAULT_Q_MODEL,
     ENABLE_OPENROUTER,
     FACTCHECK_SYSTEM_PROMPT,
     GEMINI_IMAGE_MODEL,
+    GPT_MODEL,
+    LLAMA_MODEL,
     MODEL_SELECTION_TIMEOUT,
     OPENROUTER_API_KEY,
     PAINTME_SYSTEM_PROMPT,
     PORTRAIT_SYSTEM_PROMPT,
     PROFILEME_SYSTEM_PROMPT,
     Q_SYSTEM_PROMPT,
-    RATE_LIMIT_SECONDS,
-    DEEPSEEK_MODEL,
     QWEN_MODEL,
-    LLAMA_MODEL,
-    GPT_MODEL,
+    RATE_LIMIT_SECONDS,
     SUPPORT_LINK,
     SUPPORT_MESSAGE,
     TELEGRAM_MAX_LENGTH,
@@ -434,7 +435,7 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
                 "author_name": TELEGRAPH_AUTHOR_NAME,
                 "author_url": TELEGRAPH_AUTHOR_URL,
                 "title": title,
-                "content": json.dumps(nodes),
+                "content": json.dumps(nodes, ensure_ascii=False),
                 "return_content": "false",
             },
             timeout=10,
@@ -646,6 +647,8 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             username = (
                 msg.username if msg.username and msg.username.strip() else "Anonymous"
             )
+            if msg.user_id:
+                username = f"{username} (id:{msg.user_id})"
             if msg.reply_to_message_id:
                 formatted_messages += f"msg[{msg.message_id}] reply_to[{msg.reply_to_message_id}] {timestamp} - {username}: {msg.text}\n\n"
             else:
@@ -1043,21 +1046,38 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                     "Error processing audio for fact-check: %s", e, exc_info=True
                 )
 
-    # Photo processing (only if video was not processed)
-    if not video_data and not audio_data and replied_message.photo:
-        # Simplified to handle only the single photo from the replied message
-        photo_size = replied_message.photo[-1]
-        try:
-            file = await context.bot.get_file(photo_size.file_id)
-            img_bytes = await download_media(file.file_path)
-            if img_bytes:
-                image_data_list.append(img_bytes)
-                logger.info(
-                    "Added single image to fact-check list from message %s.",
-                    replied_message.message_id,
+    # Photo or sticker processing (only if video and audio were not processed)
+    if not video_data and not audio_data:
+        if replied_message.sticker:
+            try:
+                sticker_file = await context.bot.get_file(replied_message.sticker.file_id)
+                img_bytes = await download_media(sticker_file.file_path)
+                if img_bytes:
+                    image_data_list.append(img_bytes)
+                    logger.info(
+                        "Added sticker image to fact-check list from message %s.",
+                        replied_message.message_id,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.error(
+                    "Error downloading sticker for fact-check", exc_info=True
                 )
-        except Exception:  # noqa: BLE001
-            logger.error("Error downloading single image for fact-check", exc_info=True)
+        elif replied_message.photo:
+            # Simplified to handle only the single photo from the replied message
+            photo_size = replied_message.photo[-1]
+            try:
+                file = await context.bot.get_file(photo_size.file_id)
+                img_bytes = await download_media(file.file_path)
+                if img_bytes:
+                    image_data_list.append(img_bytes)
+                    logger.info(
+                        "Added single image to fact-check list from message %s.",
+                        replied_message.message_id,
+                    )
+            except Exception:  # noqa: BLE001
+                logger.error(
+                    "Error downloading single image for fact-check", exc_info=True
+                )
 
     if (
         not message_to_check
@@ -1486,7 +1506,9 @@ async def q_handler(
                     query = replied_text_content
         else:
             if (
-                update.effective_message.photo or update.effective_message.video
+                update.effective_message.photo
+                or update.effective_message.video
+                or update.effective_message.sticker
             ):  # Check current message for media
                 target_message_for_media = update.effective_message
                 if not query and update.effective_message.caption:
@@ -1549,10 +1571,28 @@ async def q_handler(
                     except Exception:  # noqa: BLE001
                         logger.error("Error processing audio for /q", exc_info=True)
 
-            # Photo processing (only if video and audio was not processed)
+            # Photo or sticker processing (only if video and audio was not processed)
             if not video_data and not audio_data:
+                if target_message_for_media.sticker:
+                    try:
+                        sticker_file = await context.bot.get_file(
+                            target_message_for_media.sticker.file_id
+                        )
+                        img_bytes = await download_media(sticker_file.file_path)
+                        if img_bytes:
+                            image_data_list.append(img_bytes)
+                            logger.info(
+                                "Added sticker image to /q list from message %s.",
+                                target_message_for_media.message_id,
+                            )
+                    except Exception as e:  # noqa: BLE001
+                        logger.error(
+                            "Error downloading sticker for /q: %s",
+                            e,
+                            exc_info=True,
+                        )
                 # Check for media group first
-                if target_message_for_media.media_group_id:
+                elif target_message_for_media.media_group_id:
                     logger.info(
                         "Q handler: Handling media group with ID: %s",
                         target_message_for_media.media_group_id,
@@ -1768,6 +1808,9 @@ async def q_handler(
             "original_user_id": update.effective_message.from_user.id,  # Store original user for validation
             "timestamp": time.time()  # For timeout handling
         }
+
+        # Schedule default model processing if no selection is made
+        asyncio.create_task(handle_model_timeout(request_key, context.bot))
 
         # Log database entry
         await queue_message_insert(
@@ -1993,6 +2036,112 @@ async def cleanup_expired_requests(bot=None):
     return len(expired_keys)
 
 
+async def handle_model_timeout(request_key: str, bot) -> None:
+    """Process pending /q request with default model if user doesn't select a model."""
+    await asyncio.sleep(MODEL_SELECTION_TIMEOUT)
+
+    request_data = pending_q_requests.get(request_key)
+    if not request_data:
+        return
+
+    # Remove the request from pending list
+    del pending_q_requests[request_key]
+
+    try:
+        processing_text = (
+            f"No model selected in time. Using {get_model_display_name(DEFAULT_Q_MODEL)}..."
+        )
+        processing_message = await bot.edit_message_text(
+            chat_id=request_data["chat_id"],
+            message_id=request_data["selection_message_id"],
+            text=processing_text,
+        )
+
+        call_model, model_name = get_model_function_and_name(DEFAULT_Q_MODEL)
+
+        current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
+        system_prompt = Q_SYSTEM_PROMPT.format(
+            current_datetime=current_datetime,
+            language=request_data["language"],
+        )
+
+        use_pro_model = bool(
+            request_data.get("video_data")
+            or request_data.get("image_data_list")
+            or request_data.get("audio_data")
+            or request_data.get("youtube_urls")
+        )
+
+        image_data_list = request_data.get("image_data_list")
+        video_data = request_data.get("video_data")
+        audio_data = request_data.get("audio_data")
+        video_mime_type = request_data.get("video_mime_type")
+        audio_mime_type = request_data.get("audio_mime_type")
+
+        include_media = model_name == LLAMA_MODEL
+        if not include_media and DEFAULT_Q_MODEL not in [MODEL_GEMINI, MODEL_LLAMA]:
+            image_data_list = None
+            video_data = None
+            audio_data = None
+            video_mime_type = None
+            audio_mime_type = None
+            use_pro_model = bool(request_data.get("youtube_urls"))
+
+        response = await call_model(
+            system_prompt=system_prompt,
+            user_content=request_data["query"],
+            image_data_list=image_data_list,
+            video_data=video_data,
+            video_mime_type=video_mime_type,
+            use_pro_model=use_pro_model,
+            youtube_urls=request_data.get("youtube_urls"),
+            audio_data=audio_data,
+            audio_mime_type=audio_mime_type,
+        )
+
+        if response:
+            if model_name == GPT_MODEL and isinstance(response, dict):
+                analysis = response.get("analysis")
+                final = response.get("final") or ""
+                resp_text = ""
+                if analysis:
+                    resp_text += f"*Thought process*\n{analysis}\n\n"
+                resp_text += f"*Final answer*\n{final}"
+            else:
+                resp_text = (
+                    response if isinstance(response, str) else response.get("final", "")
+                )
+
+            if model_name:
+                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
+
+            await send_response(
+                processing_message,
+                resp_text,
+                "Answer to Your Question",
+                ParseMode.MARKDOWN,
+            )
+        else:
+            await bot.edit_message_text(
+                chat_id=request_data["chat_id"],
+                message_id=request_data["selection_message_id"],
+                text=(
+                    "I couldn't find an answer to your question. Please try rephrasing or "
+                    "asking something else."
+                ),
+            )
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error processing default model for /q: %s", e, exc_info=True)
+        try:
+            await bot.edit_message_text(
+                chat_id=request_data["chat_id"],
+                message_id=request_data["selection_message_id"],
+                text="Error processing your question.",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+
 # Global variable to control the cleanup task
 _cleanup_task = None
 
@@ -2147,6 +2296,11 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         photo = update.effective_message.photo[-1]
         photo_file = await context.bot.get_file(photo.file_id)
         image_urls.append(photo_file.file_path)
+    elif update.effective_message.sticker:
+        sticker_file = await context.bot.get_file(
+            update.effective_message.sticker.file_id
+        )
+        image_urls.append(sticker_file.file_path)
 
     # Get potential image from a replied message if no image in the command message
     if not image_urls and update.effective_message.reply_to_message:
@@ -2176,6 +2330,11 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             photo = replied_message.photo[-1]
             photo_file = await context.bot.get_file(photo.file_id)
             image_urls.append(photo_file.file_path)  # Add the photo to the list
+        elif replied_message.sticker:
+            sticker_file = await context.bot.get_file(
+                replied_message.sticker.file_id
+            )
+            image_urls.append(sticker_file.file_path)
 
         replied_text_content = replied_message.text or replied_message.caption or ""
         if replied_text_content:
@@ -2427,6 +2586,23 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 logger.error("Error downloading image for /vid: %s", e, exc_info=True)
                 await update.effective_message.reply_text(
                     "Error downloading image. Please try again."
+                )
+                return
+        elif replied_message.sticker:
+            logger.info("Replying to sticker for /vid command.")
+            try:
+                sticker_file = await context.bot.get_file(
+                    replied_message.sticker.file_id
+                )
+                image_data_bytes = await download_media(sticker_file.file_path)
+                if image_data_bytes:
+                    logger.info("Sticker downloaded successfully for /vid command.")
+                else:
+                    logger.warning("Failed to download sticker for /vid.")
+            except Exception as e:  # noqa: BLE001
+                logger.error("Error downloading sticker for /vid: %s", e, exc_info=True)
+                await update.effective_message.reply_text(
+                    "Error downloading sticker. Please try again."
                 )
                 return
 
