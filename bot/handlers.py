@@ -10,6 +10,7 @@ from datetime import datetime
 from functools import partial
 from io import BytesIO
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 import langid
 import markdown
@@ -66,6 +67,7 @@ from bot.llm import (
     generate_video_with_veo,
 )
 from bot.tools.telegraph_extractor import extract_telegraph_content
+from bot.tools.twitter_extractor import extract_twitter_content
 
 # Configure logging
 logging.basicConfig(
@@ -917,6 +919,235 @@ async def download_telegraph_media(
     return image_data_list, video_data, video_mime_type
 
 
+
+TWITTER_HOST_ALLOWLIST = {
+    "x.com",
+    "www.x.com",
+    "twitter.com",
+    "www.twitter.com",
+    "mobile.twitter.com",
+    "m.twitter.com",
+    "fxtwitter.com",
+    "www.fxtwitter.com",
+    "vxtwitter.com",
+    "www.vxtwitter.com",
+    "fixupx.com",
+    "www.fixupx.com",
+    "fixvx.com",
+    "www.fixvx.com",
+    "twittpr.com",
+    "www.twittpr.com",
+    "pxtwitter.com",
+    "www.pxtwitter.com",
+    "tweetpik.com",
+    "www.tweetpik.com",
+}
+
+TWITTER_URL_PATTERN = re.compile(
+    r"(https?://(?:www\.)?(?:x\.com|twitter\.com|mobile\.twitter\.com|m\.twitter\.com|"
+    r"fxtwitter\.com|vxtwitter\.com|fixupx\.com|fixvx\.com|twittpr\.com|pxtwitter\.com|"
+    r"tweetpik\.com)/[^\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _is_twitter_url(url: str) -> bool:
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return False
+
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host in TWITTER_HOST_ALLOWLIST:
+        return True
+    return host.endswith(".x.com") or host.endswith(".twitter.com")
+
+
+async def extract_twitter_urls_and_content(
+    text: str,
+    message_entities=None,
+    max_urls: int = 5,
+    source_text: Optional[str] = None,
+):
+    """Extract Twitter/X URLs, inline their content, and collect metadata."""
+    if not text:
+        return text, []
+
+    base_text = source_text if source_text is not None else text
+    replacements: List[Dict[str, str]] = []
+    count = 0
+
+    if message_entities:
+        for entity in message_entities:
+            if count >= max_urls:
+                break
+            if entity.type not in {"url", "text_link"}:
+                continue
+
+            if entity.type == "url":
+                substring = base_text[entity.offset : entity.offset + entity.length]
+                url_candidate = substring
+            else:
+                substring = base_text[entity.offset : entity.offset + entity.length]
+                url_candidate = entity.url
+
+            if not url_candidate or not _is_twitter_url(url_candidate):
+                continue
+
+            replacements.append(
+                {
+                    "url": url_candidate,
+                    "offset": entity.offset,
+                    "substring": substring or "",
+                }
+            )
+            count += 1
+
+    if count < max_urls:
+        for match in TWITTER_URL_PATTERN.finditer(base_text):
+            if count >= max_urls:
+                break
+            url_candidate = match.group(1)
+            if not _is_twitter_url(url_candidate):
+                continue
+            if any(
+                existing["offset"] == match.start() and existing["url"] == url_candidate
+                for existing in replacements
+            ):
+                continue
+            replacements.append(
+                {
+                    "url": url_candidate,
+                    "offset": match.start(),
+                    "substring": match.group(0),
+                }
+            )
+            count += 1
+
+    if not replacements:
+        return text, []
+
+    new_text = text
+    extracted_contents: List[Dict] = []
+
+    for info in reversed(sorted(replacements, key=lambda item: item["offset"])):
+        url = info["url"]
+        substring = info["substring"]
+        try:
+            content_data = extract_twitter_content(url)
+            formatted_content = content_data.get("formatted_content", "")
+            if not formatted_content:
+                formatted_content = f"\n[Twitter content extracted from {url}]\n"
+
+            if not substring:
+                new_text = f"{new_text}\n{formatted_content}"
+            else:
+                position = new_text.rfind(substring)
+                if position == -1:
+                    logger.debug(
+                        "Unable to locate Twitter substring '%s' in text; appending content.",
+                        substring,
+                    )
+                    new_text = f"{new_text}\n{formatted_content}"
+                else:
+                    new_text = (
+                        f"{new_text[:position]}{formatted_content}{new_text[position + len(substring):]}"
+                    )
+
+            extracted_contents.insert(0, content_data)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error extracting Twitter content from %s: %s", url, exc)
+            fallback = f"\n[Twitter content extraction failed for {url}]\n"
+            if not substring:
+                new_text = f"{new_text}{fallback}"
+            else:
+                position = new_text.rfind(substring)
+                if position == -1:
+                    new_text = f"{new_text}{fallback}"
+                else:
+                    new_text = (
+                        f"{new_text[:position]}{fallback}{new_text[position + len(substring):]}"
+                    )
+            extracted_contents.insert(
+                0,
+                {
+                    "url": url,
+                    "text_content": f"[Twitter content extraction failed for {url}]",
+                    "image_urls": [],
+                    "video_urls": [],
+                    "formatted_content": fallback,
+                },
+            )
+
+    return new_text, extracted_contents
+
+
+async def download_twitter_media(
+    twitter_contents: List[dict],
+    max_images: int = 5,
+    max_videos: int = 1,
+) -> tuple:
+    """Download images and videos referenced in extracted Twitter content."""
+    image_data_list: List[bytes] = []
+    video_data: Optional[bytes] = None
+    video_mime_type: Optional[str] = None
+
+    image_count = 0
+    video_count = 0
+
+    for content in twitter_contents:
+        if image_count < max_images:
+            for img_url in content.get("image_urls", []):
+                if image_count >= max_images:
+                    break
+                try:
+                    logger.info("Downloading Twitter image: %s", img_url)
+                    img_bytes = await download_media(img_url)
+                    if img_bytes:
+                        image_data_list.append(img_bytes)
+                        image_count += 1
+                    else:
+                        logger.warning("Failed to download Twitter image: %s", img_url)
+                except Exception as exc:  # noqa: BLE001
+                    logger.error("Error downloading Twitter image %s: %s", img_url, exc)
+
+        if video_data or video_count >= max_videos:
+            continue
+
+        for vid_url in content.get("video_urls", []):
+            if video_data:
+                break
+            try:
+                logger.info("Downloading Twitter video: %s", vid_url)
+                vid_bytes = await download_media(vid_url)
+                if vid_bytes:
+                    video_data = vid_bytes
+                    lowered = vid_url.lower()
+                    if lowered.endswith(".m3u8"):
+                        video_mime_type = "application/x-mpegURL"
+                    elif lowered.endswith(".mpd"):
+                        video_mime_type = "application/dash+xml"
+                    elif lowered.endswith(".webm"):
+                        video_mime_type = "video/webm"
+                    else:
+                        video_mime_type = "video/mp4"
+                    video_count += 1
+                else:
+                    logger.warning("Failed to download Twitter video: %s", vid_url)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Error downloading Twitter video %s: %s", vid_url, exc)
+
+    logger.info(
+        "Downloaded %s Twitter image(s) and %s video(s)",
+        len(image_data_list),
+        1 if video_data else 0,
+    )
+    return image_data_list, video_data, video_mime_type
+
 async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /factcheck command.
 
@@ -952,9 +1183,15 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     # Extract Telegraph content if present (for AI processing)
     message_to_check = original_message_text
     telegraph_contents = []
+    twitter_contents = []
     if message_to_check:
         message_to_check, telegraph_contents = await extract_telegraph_urls_and_content(
             message_to_check, replied_message.entities
+        )
+        message_to_check, twitter_contents = await extract_twitter_urls_and_content(
+            message_to_check,
+            replied_message.entities,
+            source_text=original_message_text,
         )
 
     image_data_list: List[bytes] = []
@@ -987,6 +1224,28 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
                 )
         except Exception as e:
             logger.error("Error downloading Telegraph media for factcheck: %s", e)
+
+
+    if twitter_contents:
+        try:
+            twitter_images, twitter_video, twitter_video_mime = (
+                await download_twitter_media(twitter_contents)
+            )
+            if twitter_images:
+                image_data_list.extend(twitter_images)
+                logger.info(
+                    "Added %s images from Twitter content to factcheck",
+                    len(twitter_images),
+                )
+            if twitter_video and not video_data:
+                video_data = twitter_video
+                video_mime_type = twitter_video_mime
+                logger.info(
+                    "Added video from Twitter content to factcheck with MIME: %s",
+                    video_mime_type,
+                )
+        except Exception as e:
+            logger.error("Error downloading Twitter media for factcheck: %s", e)
 
     # Video processing (takes precedence)
     if replied_message.video:
@@ -1139,6 +1398,35 @@ async def factcheck_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             processing_message_text = f"Extracting and fact-checking content from {len(telegraph_contents)} Telegraph page(s){telegraph_media_info}..."
         else:
             processing_message_text = f"{processing_message_text[:-3]} and {len(telegraph_contents)} Telegraph page(s){telegraph_media_info}..."
+
+
+    if twitter_contents:
+        twitter_media_info = ""
+        if any(content.get("image_urls") for content in twitter_contents):
+            image_count = sum(
+                len(content.get("image_urls", [])) for content in twitter_contents
+            )
+            twitter_media_info += f" with {image_count} image(s)"
+        if any(content.get("video_urls") for content in twitter_contents):
+            video_count = sum(
+                len(content.get("video_urls", [])) for content in twitter_contents
+            )
+            twitter_media_info += (
+                f" and {video_count} video(s)"
+                if twitter_media_info
+                else f" with {video_count} video(s)"
+            )
+    
+        if processing_message_text == "Fact-checking message...":
+            processing_message_text = (
+                f"Extracting and fact-checking content from {len(twitter_contents)} Twitter post(s)"
+                f"{twitter_media_info}..."
+            )
+        else:
+            processing_message_text = (
+                f"{processing_message_text[:-3]} and {len(twitter_contents)} Twitter post(s)"
+                f"{twitter_media_info}..."
+            )
 
     processing_message = await update.effective_message.reply_text(
         processing_message_text
@@ -1474,6 +1762,12 @@ async def q_handler(
     try:
         original_query = " ".join(context.args) if context.args else ""
         query = original_query  # Keep original for database logging
+        message_entity_text = (
+            update.effective_message.text
+            or update.effective_message.caption
+            or ""
+        )
+
         image_data_list: List[bytes] = []
         video_data: Optional[bytes] = None
         video_mime_type: Optional[str] = None
@@ -1483,6 +1777,7 @@ async def q_handler(
         audio_data: Optional[bytes] = None
         audio_mime_type: Optional[str] = None
         telegraph_contents = []
+        twitter_contents: List[dict] = []
 
         if update.effective_message.reply_to_message:
             target_message_for_media = update.effective_message.reply_to_message
@@ -1491,11 +1786,19 @@ async def q_handler(
             )
             if replied_text_content:
                 # Extract Telegraph content if present in replied message
+                original_replied_text = replied_text_content
                 replied_text_content, telegraph_contents = (
                     await extract_telegraph_urls_and_content(
                         replied_text_content, target_message_for_media.entities
                     )
                 )
+                replied_text_content, reply_twitter_contents = await extract_twitter_urls_and_content(
+                    replied_text_content,
+                    target_message_for_media.entities,
+                    source_text=original_replied_text,
+                )
+                if reply_twitter_contents:
+                    twitter_contents.extend(reply_twitter_contents)
 
                 if query:
                     language = languages.get(
@@ -1665,6 +1968,14 @@ async def q_handler(
             )
             telegraph_contents.extend(more_telegraph_contents)
 
+            query, more_twitter_contents = await extract_twitter_urls_and_content(
+                query,
+                update.effective_message.entities,
+                source_text=message_entity_text,
+            )
+            if more_twitter_contents:
+                twitter_contents.extend(more_twitter_contents)
+
         # Download Telegraph media if available
         if telegraph_contents:
             try:
@@ -1689,6 +2000,28 @@ async def q_handler(
             except Exception as e:
                 logger.error("Error downloading Telegraph media for q_handler: %s", e)
 
+
+        if twitter_contents:
+            try:
+                twitter_images, twitter_video, twitter_video_mime = (
+                    await download_twitter_media(twitter_contents)
+                )
+                if twitter_images:
+                    image_data_list.extend(twitter_images)
+                    logger.info(
+                        "Added %s images from Twitter content to q_handler",
+                        len(twitter_images),
+                    )
+                if twitter_video and not video_data:
+                    video_data = twitter_video
+                    video_mime_type = twitter_video_mime
+                    logger.info(
+                        "Added video from Twitter content to q_handler with MIME: %s",
+                        video_mime_type,
+                    )
+            except Exception as e:
+                logger.error("Error downloading Twitter media for q_handler: %s", e)
+
         if (
             query and not video_data and not image_data_list and not audio_data
         ):  # If query is present and no media is present, extract YouTube URLs
@@ -1708,6 +2041,8 @@ async def q_handler(
                 processing_message_text = processing_message_text.replace("Processing", "Analyzing audio and processing")
             elif image_data_list:
                 processing_message_text = processing_message_text.replace("Processing", f"Analyzing {len(image_data_list)} image(s) and processing")
+            elif twitter_contents:
+                processing_message_text = processing_message_text.replace("Processing", f"Analyzing {len(twitter_contents)} Twitter post(s) and processing")
             elif youtube_urls and len(youtube_urls) > 0:
                 processing_message_text = processing_message_text.replace("Processing", f"Analyzing {len(youtube_urls)} YouTube video(s) and processing")
 
@@ -1796,6 +2131,7 @@ async def q_handler(
             "audio_mime_type": audio_mime_type,
             "youtube_urls": youtube_urls,
             "telegraph_contents": telegraph_contents,
+            "twitter_contents": twitter_contents,
             "date": update.effective_message.date,
             "reply_to_message_id": (
                 update.effective_message.reply_to_message.message_id
@@ -1896,6 +2232,8 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
             processing_text = f"Analyzing audio and processing your question with {get_model_display_name(selected_model)}..."
         elif request_data.get("image_data_list"):
             processing_text = f"Analyzing {len(request_data['image_data_list'])} image(s) and processing your question with {get_model_display_name(selected_model)}..."
+        elif request_data.get("twitter_contents"):
+            processing_text = f"Analyzing {len(request_data['twitter_contents'])} Twitter post(s) and processing your question with {get_model_display_name(selected_model)}..."
         elif request_data.get("youtube_urls") and len(request_data["youtube_urls"]) > 0:
             processing_text = f"Analyzing {len(request_data['youtube_urls'])} YouTube video(s) and processing your question with {get_model_display_name(selected_model)}..."
         
