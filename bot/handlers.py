@@ -31,6 +31,7 @@ from bot.config import (
     FACTCHECK_SYSTEM_PROMPT,
     GEMINI_IMAGE_MODEL,
     GPT_MODEL,
+    GROK_MODEL,
     LLAMA_MODEL,
     MODEL_SELECTION_TIMEOUT,
     OPENROUTER_API_KEY,
@@ -88,6 +89,32 @@ MODEL_GEMINI = "gemini"
 MODEL_LLAMA = "llama"
 MODEL_QWEN = "qwen"
 MODEL_DEEPSEEK = "deepseek"
+MODEL_GROK = "grok"
+
+# Capability map for selectable models
+MODEL_CAPABILITIES = {
+    MODEL_GEMINI: {"images": True, "video": True, "audio": True},
+    MODEL_LLAMA: {"images": True, "video": True, "audio": True},
+    MODEL_QWEN: {"images": False, "video": False, "audio": False},
+    MODEL_DEEPSEEK: {"images": False, "video": False, "audio": False},
+    MODEL_GROK: {"images": True, "video": False, "audio": False},
+}
+
+MODEL_CONFIG_VALUES = {
+    MODEL_LLAMA: LLAMA_MODEL,
+    MODEL_GROK: GROK_MODEL,
+    MODEL_QWEN: QWEN_MODEL,
+    MODEL_DEEPSEEK: DEEPSEEK_MODEL,
+}
+
+
+
+def is_model_configured(model_key: str) -> bool:
+    """Return True if the model has a configured identifier."""
+    if model_key == MODEL_GEMINI:
+        return True
+    model_value = MODEL_CONFIG_VALUES.get(model_key)
+    return bool(model_value and model_value.strip())
 
 # Dictionary to store pending Q requests waiting for model selection
 pending_q_requests: Dict[str, Dict] = {}
@@ -98,36 +125,69 @@ def is_openrouter_available() -> bool:
     return ENABLE_OPENROUTER and OPENROUTER_API_KEY is not None and OPENROUTER_API_KEY.strip() != ""
 
 
-def create_model_selection_keyboard(has_media: bool = False) -> InlineKeyboardMarkup:
+def create_model_selection_keyboard(
+    *,
+    has_media: bool = False,
+    has_images: bool = False,
+    has_av_media: bool = False,
+) -> InlineKeyboardMarkup:
     """Create inline keyboard for model selection.
-    
+
     Args:
-        has_media: If True, only show Gemini and Llama options (media-capable models)
-        
+        has_media: If True, only show media-capable models
+        has_images: Indicates the request includes image content
+        has_av_media: Indicates the request includes video or audio content
+
     Returns:
         InlineKeyboardMarkup with model selection buttons
     """
+    gemini_button = InlineKeyboardButton(
+        "Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"
+    )
+    llama_button = InlineKeyboardButton(
+        "Llama 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_LLAMA}"
+    )
+    grok_button = InlineKeyboardButton(
+        "Grok 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GROK}"
+    )
+    qwen_button = InlineKeyboardButton(
+        "Qwen 3", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_QWEN}"
+    )
+    deepseek_button = InlineKeyboardButton(
+        "DeepSeek 3.1", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_DEEPSEEK}"
+    )
+
     if has_media:
-        # Only show media-capable models
-        keyboard = [
-            [
-                InlineKeyboardButton("Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"),
-                InlineKeyboardButton("Llama 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_LLAMA}")
-            ]
-        ]
-    else:
-        # Show all models
-        keyboard = [
-            [
-                InlineKeyboardButton("Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"),
-                InlineKeyboardButton("Llama 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_LLAMA}")
-            ],
-            [
-                InlineKeyboardButton("Qwen 3", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_QWEN}"),
-                InlineKeyboardButton("DeepSeek 3.1", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_DEEPSEEK}")
-            ]
-        ]
-    
+        keyboard: List[List[InlineKeyboardButton]] = [[gemini_button]]
+        if is_model_configured(MODEL_LLAMA):
+            keyboard[0].append(llama_button)
+
+        if has_av_media:
+            return InlineKeyboardMarkup(keyboard)
+
+        if has_images and is_model_configured(MODEL_GROK):
+            keyboard.append([grok_button])
+
+        return InlineKeyboardMarkup(keyboard)
+
+    keyboard: List[List[InlineKeyboardButton]] = [[gemini_button]]
+    if is_model_configured(MODEL_LLAMA):
+        keyboard[0].append(llama_button)
+
+    second_row: List[InlineKeyboardButton] = []
+    if is_model_configured(MODEL_GROK):
+        second_row.append(grok_button)
+    if is_model_configured(MODEL_QWEN):
+        second_row.append(qwen_button)
+    if second_row:
+        keyboard.append(second_row)
+
+    third_row: List[InlineKeyboardButton] = []
+    if is_model_configured(MODEL_DEEPSEEK):
+        third_row.append(deepseek_button)
+    if third_row:
+        keyboard.append(third_row)
+
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -1666,26 +1726,22 @@ async def process_q_request_with_specific_model(
         )
         
         # Determine if pro model should be used
-        use_pro_model = bool(
-            video_data or image_data_list or audio_data or youtube_urls
-        )
+        supports_video = model_name == LLAMA_MODEL or model_name is None
+        supports_audio = supports_video
+        supports_images = supports_video or model_name == GROK_MODEL
 
-        # Handle media inclusion based on model
-        include_media = model_name == LLAMA_MODEL
-        if not include_media:
-            # For non-media models, clear media data except YouTube URLs
-            temp_image_data_list = None
-            temp_video_data = None
-            temp_audio_data = None
-            temp_video_mime_type = None
-            temp_audio_mime_type = None
-            use_pro_model = bool(youtube_urls)
-        else:
-            temp_image_data_list = image_data_list
-            temp_video_data = video_data
-            temp_audio_data = audio_data
-            temp_video_mime_type = video_mime_type
-            temp_audio_mime_type = audio_mime_type
+        temp_image_data_list = image_data_list if supports_images else None
+        temp_video_data = video_data if supports_video else None
+        temp_audio_data = audio_data if supports_audio else None
+        temp_video_mime_type = video_mime_type if supports_video else None
+        temp_audio_mime_type = audio_mime_type if supports_audio else None
+
+        use_pro_model = bool(
+            youtube_urls
+            or temp_video_data
+            or temp_image_data_list
+            or temp_audio_data
+        )
 
         # Call the specified model
         response = await call_model(
@@ -2069,10 +2125,16 @@ async def q_handler(
         
         # OpenRouter is available - show model selection
         # Check if media is present to determine which models to show
-        has_media = bool(video_data or image_data_list or audio_data or youtube_urls)
-        
+        has_images = bool(image_data_list)
+        has_av_media = bool(video_data or audio_data)
+        has_media = has_images or has_av_media
+
         # Create model selection keyboard
-        keyboard = create_model_selection_keyboard(has_media)
+        keyboard = create_model_selection_keyboard(
+            has_media=has_media,
+            has_images=has_images,
+            has_av_media=has_av_media,
+        )
         
         # Create selection message text
         selection_text = "Please select which AI model to use for your question:"
@@ -2208,6 +2270,10 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("Oops! This request has vanished into the void. Maybe it went for a coffee break ☕️.")
         return
     
+    if not is_model_configured(selected_model):
+        await query.answer("That model is not configured for this bot yet.", show_alert=True)
+        return
+    
     # Check if the user clicking is the original requester
     if request_data["original_user_id"] != user_id:
         await query.answer("Hey! No cookie stealing allowed. Only the original baker can eat this one. 🍪", show_alert=True)
@@ -2250,29 +2316,23 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
         )
         
         # Determine if pro model should be used
+        capabilities = MODEL_CAPABILITIES.get(selected_model, {})
+        supports_images = capabilities.get("images", False)
+        supports_video = capabilities.get("video", False)
+        supports_audio = capabilities.get("audio", False)
+
+        image_data_list = request_data.get("image_data_list") if supports_images else None
+        video_data = request_data.get("video_data") if supports_video else None
+        audio_data = request_data.get("audio_data") if supports_audio else None
+        video_mime_type = request_data.get("video_mime_type") if supports_video else None
+        audio_mime_type = request_data.get("audio_mime_type") if supports_audio else None
+
         use_pro_model = bool(
-            request_data.get("video_data") or 
-            request_data.get("image_data_list") or 
-            request_data.get("audio_data") or 
-            request_data.get("youtube_urls")
+            video_data
+            or (image_data_list and len(image_data_list) > 0)
+            or audio_data
+            or request_data.get("youtube_urls")
         )
-        
-        # Handle media inclusion based on model
-        image_data_list = request_data.get("image_data_list")
-        video_data = request_data.get("video_data")
-        audio_data = request_data.get("audio_data")
-        video_mime_type = request_data.get("video_mime_type")
-        audio_mime_type = request_data.get("audio_mime_type")
-        
-        include_media = model_name == LLAMA_MODEL
-        if not include_media and selected_model not in [MODEL_GEMINI, MODEL_LLAMA]:
-            # For non-media models, clear media data
-            image_data_list = None
-            video_data = None
-            audio_data = None
-            video_mime_type = None
-            audio_mime_type = None
-            use_pro_model = bool(request_data.get("youtube_urls"))
         
         # Call the selected model
         response = await call_model(
@@ -2326,6 +2386,7 @@ def get_model_display_name(model_key: str) -> str:
     display_names = {
         MODEL_GEMINI: "Gemini 2.5 ✨",
         MODEL_LLAMA: "Llama 4",
+        MODEL_GROK: "Grok 4",
         MODEL_QWEN: "Qwen 3",
         MODEL_DEEPSEEK: "DeepSeek 3.1"
     }
@@ -2336,11 +2397,13 @@ def get_model_function_and_name(model_key: str) -> tuple:
     """Get model function and name for the given model key."""
     if model_key == MODEL_GEMINI:
         return call_gemini, None  # Default Gemini model
-    elif model_key == MODEL_LLAMA:
+    elif model_key == MODEL_LLAMA and is_model_configured(MODEL_LLAMA):
         return partial(call_openrouter, model_name=LLAMA_MODEL), LLAMA_MODEL
-    elif model_key == MODEL_QWEN:
+    elif model_key == MODEL_GROK and is_model_configured(MODEL_GROK):
+        return partial(call_openrouter, model_name=GROK_MODEL), GROK_MODEL
+    elif model_key == MODEL_QWEN and is_model_configured(MODEL_QWEN):
         return partial(call_openrouter, model_name=QWEN_MODEL), QWEN_MODEL
-    elif model_key == MODEL_DEEPSEEK:
+    elif model_key == MODEL_DEEPSEEK and is_model_configured(MODEL_DEEPSEEK):
         return partial(call_openrouter, model_name=DEEPSEEK_MODEL), DEEPSEEK_MODEL
     else:
         return call_gemini, None  # Default fallback
@@ -2403,27 +2466,30 @@ async def handle_model_timeout(request_key: str, bot) -> None:
             language=request_data["language"],
         )
 
+        capability_key = (
+            DEFAULT_Q_MODEL
+            if DEFAULT_Q_MODEL == MODEL_GEMINI or is_model_configured(DEFAULT_Q_MODEL)
+            else MODEL_GEMINI
+        )
+        capabilities = MODEL_CAPABILITIES.get(
+            capability_key, MODEL_CAPABILITIES[MODEL_GEMINI]
+        )
+        supports_images = capabilities.get("images", False)
+        supports_video = capabilities.get("video", False)
+        supports_audio = capabilities.get("audio", False)
+
+        image_data_list = request_data.get("image_data_list") if supports_images else None
+        video_data = request_data.get("video_data") if supports_video else None
+        audio_data = request_data.get("audio_data") if supports_audio else None
+        video_mime_type = request_data.get("video_mime_type") if supports_video else None
+        audio_mime_type = request_data.get("audio_mime_type") if supports_audio else None
+
         use_pro_model = bool(
-            request_data.get("video_data")
-            or request_data.get("image_data_list")
-            or request_data.get("audio_data")
+            video_data
+            or (image_data_list and len(image_data_list) > 0)
+            or audio_data
             or request_data.get("youtube_urls")
         )
-
-        image_data_list = request_data.get("image_data_list")
-        video_data = request_data.get("video_data")
-        audio_data = request_data.get("audio_data")
-        video_mime_type = request_data.get("video_mime_type")
-        audio_mime_type = request_data.get("audio_mime_type")
-
-        include_media = model_name == LLAMA_MODEL
-        if not include_media and DEFAULT_Q_MODEL not in [MODEL_GEMINI, MODEL_LLAMA]:
-            image_data_list = None
-            video_data = None
-            audio_data = None
-            video_mime_type = None
-            audio_mime_type = None
-            use_pro_model = bool(request_data.get("youtube_urls"))
 
         response = await call_model(
             system_prompt=system_prompt,
