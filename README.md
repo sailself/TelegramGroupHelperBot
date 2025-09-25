@@ -75,6 +75,11 @@ Configure the bot by editing the `.env` file:
 ### OpenRouter settings (Optional):
 - `ENABLE_OPENROUTER`: Enable/disable OpenRouter model selection (default: "true")
 - `OPENROUTER_API_KEY`: Your OpenRouter API key for accessing Llama, Qwen, DeepSeek, and GPT models
+- `OPENROUTER_ALPHA_BASE_URL`: Base URL for the alpha Responses API (default: "https://openrouter.ai/api/alpha")
+- `ENABLE_JINA_MCP`: Enable the Jina MCP toolchain for OpenRouter requests (default: "true")
+- `JINA_AI_API_KEY`: Optional Jina API key to unlock higher MCP rate limits and search features
+- `JINA_SEARCH_ENDPOINT`: Jina search API endpoint (default: "https://s.jina.ai/search")
+- `JINA_READER_ENDPOINT`: Jina reader API endpoint (default: "https://r.jina.ai/")
 - `DEEPSEEK_MODEL`: DeepSeek model identifier (e.g., "deepseek/deepseek-v3")
 - `QWEN_MODEL`: Qwen model identifier (e.g., "qwen/qwen-2.5-72b-instruct")
 - `LLAMA_MODEL`: Llama model identifier (e.g., "meta-llama/llama-3.1-405b-instruct")
@@ -138,6 +143,11 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Multi-model support
 ENABLE_OPENROUTER=true
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_ALPHA_BASE_URL=https://openrouter.ai/api/alpha
+ENABLE_JINA_MCP=true
+JINA_AI_API_KEY=
+JINA_SEARCH_ENDPOINT=https://s.jina.ai/search
+JINA_READER_ENDPOINT=https://r.jina.ai/
 DEEPSEEK_MODEL=deepseek/deepseek-v3
 QWEN_MODEL=qwen/qwen-2.5-72b-instruct
 LLAMA_MODEL=meta-llama/llama-3.1-405b-instruct

@@ -81,9 +81,14 @@ VERTEX_IMAGE_MODEL=os.getenv("VERTEX_IMAGE_MODEL")
 ENABLE_OPENROUTER = os.getenv("ENABLE_OPENROUTER", "true").lower() == "true"
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+OPENROUTER_ALPHA_BASE_URL = os.getenv("OPENROUTER_ALPHA_BASE_URL", "https://openrouter.ai/api/alpha")
 OPENROUTER_TEMPERATURE = float(os.getenv("OPENROUTER_TEMPERATURE", "0.7"))
 OPENROUTER_TOP_K = int(os.getenv("OPENROUTER_TOP_K", "40"))
 OPENROUTER_TOP_P = float(os.getenv("OPENROUTER_TOP_P", "0.95"))
+ENABLE_JINA_MCP = os.getenv("ENABLE_JINA_MCP", "true").lower() == "true"
+JINA_AI_API_KEY = os.getenv("JINA_AI_API_KEY", "")
+JINA_SEARCH_ENDPOINT = os.getenv("JINA_SEARCH_ENDPOINT", "https://s.jina.ai/search")
+JINA_READER_ENDPOINT = os.getenv("JINA_READER_ENDPOINT", "https://r.jina.ai/")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "")
 GROK_MODEL = os.getenv("GROK_MODEL", "")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "")
@@ -119,7 +124,10 @@ USER_HISTORY_MESSAGE_COUNT = int(os.getenv("USER_HISTORY_MESSAGE_COUNT", "200"))
 CWD_PW_API_KEY = os.getenv("CWD_PW_API_KEY", "")
 
 # Support/Ko-fi settings
-SUPPORT_MESSAGE = os.getenv("SUPPORT_MESSAGE", "如果觉得{bot_name}有帮助，可以支持一下它的开发！")
+SUPPORT_MESSAGE = os.getenv(
+    "SUPPORT_MESSAGE",
+    "Thanks for supporting the bot! Tap the button below to open the support page.",
+)
 SUPPORT_LINK = os.getenv("SUPPORT_LINK", "")
 
 # Whitelist settings
