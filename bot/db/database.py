@@ -223,8 +223,6 @@ async def db_writer() -> None:
             # Still mark as done to avoid blocking the queue
             message_queue.task_done()
             
-        # Small sleep to avoid CPU hogging
-        await asyncio.sleep(0.1)
 
 
 async def queue_message_insert(

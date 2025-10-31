@@ -1,9 +1,12 @@
-﻿import logging
+import asyncio
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
-import requests
+from aiohttp import ClientError
+
+from bot.utils.http import get_http_session
 
 logger = logging.getLogger(__name__)
 
@@ -275,7 +278,7 @@ def _strip_indices(cleaned_lines: List[str], indexes: List[Optional[int]]) -> Li
     return [line for idx, line in enumerate(cleaned_lines) if idx not in skip]
 
 
-def extract_twitter_content(url: str) -> Dict[str, Any]:
+async def extract_twitter_content(url: str) -> Dict[str, Any]:
     """Extract text, image URLs, and video URLs from a Twitter/X status link."""
     try:
         normalized_url = _normalize_status_url(url)
@@ -286,18 +289,22 @@ def extract_twitter_content(url: str) -> Dict[str, Any]:
     proxy_url = _build_proxy_url(normalized_url)
     logger.info("Fetching Twitter/X content via proxy: %s", proxy_url)
 
+    session = await get_http_session()
     try:
-        response = requests.get(
+        async with session.get(
             proxy_url,
             timeout=_REQUEST_TIMEOUT,
             headers={"User-Agent": _USER_AGENT},
-        )
-        response.raise_for_status()
-    except requests.RequestException as exc:
+        ) as response:
+            response.raise_for_status()
+            raw_text = await response.text()
+    except asyncio.TimeoutError as exc:
+        logger.error("Timeout fetching Twitter/X content from %s", proxy_url)
+        raise Exception(f"Error fetching Twitter/X content: {exc}") from exc
+    except ClientError as exc:
         logger.error("Error fetching Twitter/X content from %s: %s", proxy_url, exc)
         raise Exception(f"Error fetching Twitter/X content: {exc}") from exc
 
-    raw_text = response.text
     marker = "Markdown Content:\n"
     marker_idx = raw_text.find(marker)
     if marker_idx == -1:

@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import markdown
-import requests
+from aiohttp import ClientError
 from bs4 import BeautifulSoup
 from html2text import html2text
 
@@ -22,6 +22,7 @@ from bot.config import (
 from bot.llm.media import download_media
 from bot.tools.telegraph_extractor import extract_telegraph_content
 from bot.tools.twitter_extractor import extract_twitter_content
+from bot.utils.http import get_http_session
 
 logger = logging.getLogger(__name__)
 
@@ -174,12 +175,12 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
     Returns:
         The URL of the created page, or None if creation failed.
     """
-    try:
-        # Convert markdown to Telegraph nodes
-        nodes = markdown_to_telegraph_nodes(content)
+    nodes = markdown_to_telegraph_nodes(content)
 
-        # Create the page
-        response = requests.post(
+    session = await get_http_session()
+
+    try:
+        async with session.post(
             "https://api.telegra.ph/createPage",
             data={
                 "access_token": TELEGRAPH_ACCESS_TOKEN,
@@ -190,24 +191,31 @@ async def create_telegraph_page(title: str, content: str) -> Optional[str]:
                 "return_content": "false",
             },
             timeout=10,
+        ) as response:
+            response.raise_for_status()
+            response_data = await response.json()
+    except asyncio.TimeoutError:
+        logger.error(
+            "Timed out while creating Telegraph page for title '%s'",
+            title,
         )
-
-        response_data = response.json()
-
-        if response_data.get("ok"):
-            return response_data["result"]["url"]
-        else:
-            # This is an error from the API, not a Python exception in this block.
-            # If we wanted to log the response_data itself for debugging, that's different.
-            # For now, not adding exc_info=True as 'e' is not in this scope.
-            logger.error(
-                "Failed to create Telegraph page: %s", response_data.get("error")
-            )
-            return None
-
-    except Exception as e:  # noqa: BLE001
-        logger.error("Error creating Telegraph page: %s", e, exc_info=True)
         return None
+    except ClientError as exc:
+        logger.error("Error calling Telegraph API: %s", exc)
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.error("Unexpected error creating Telegraph page: %s", exc)
+        return None
+
+    if response_data.get("ok"):
+        return response_data["result"]["url"]
+
+    # This is an error from the API, not a Python exception in this block.
+    logger.error(
+        "Error creating Telegraph page: %s",
+        response_data.get("error", "Unknown error"),
+    )
+    return None
 
 
 def extract_youtube_urls(text: str, max_urls: int = 10):
@@ -308,7 +316,7 @@ async def extract_telegraph_urls_and_content(
         telegraph_url = telegraph_info["url"]
         try:
             logger.info("Extracting content from Telegraph URL: %s", telegraph_url)
-            content_data = extract_telegraph_content(telegraph_url)
+            content_data = await extract_telegraph_content(telegraph_url)
 
             # Format the extracted content
             content_text = content_data.get("text_content", "")
@@ -531,7 +539,7 @@ async def extract_twitter_urls_and_content(
         url = info["url"]
         substring = info["substring"]
         try:
-            content_data = extract_twitter_content(url)
+            content_data = await extract_twitter_content(url)
             formatted_content = content_data.get("formatted_content", "")
             if not formatted_content:
                 formatted_content = f"\n[Twitter content extracted from {url}]\n"

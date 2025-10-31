@@ -39,6 +39,7 @@ from bot.handlers import (
     tldr_handler,
     vid_handler,
 )
+from bot.utils.http import close_http_session
 
 # Configure logging
 logging.basicConfig(
@@ -68,7 +69,13 @@ async def post_init(application):
 def main():
     """Main function to run the bot."""
     # Create the Application
-    application = Application.builder().token(BOT_TOKEN).concurrent_updates(True).build()
+    builder = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .concurrent_updates(True)
+        .post_shutdown(close_http_session)
+    )
+    application = builder.build()
     
     # Register handlers
     application.add_handler(CommandHandler("start", start_handler))

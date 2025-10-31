@@ -2,7 +2,7 @@
 
 import json
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
@@ -84,36 +84,34 @@ class TestTelegraphFunctionality(unittest.TestCase):
     @pytest.mark.asyncio
     async def test_create_telegraph_page(self):
         """Test the creation of a Telegraph page."""
-        # Mock the requests.post method
-        with patch('requests.post') as mock_post:
-            # Configure the mock to return a successful response
-            mock_response = MagicMock()
-            mock_response.json.return_value = {
+        # Mock the shared HTTP session
+        with patch('bot.handlers.content.get_http_session', new_callable=AsyncMock) as mock_get_session:
+            mock_session = AsyncMock()
+            mock_get_session.return_value = mock_session
+
+            mock_response = AsyncMock()
+            mock_response.json = AsyncMock(return_value={
                 'ok': True,
-                'result': {
-                    'url': 'https://telegra.ph/Test-Page-01-01'
-                }
-            }
-            mock_post.return_value = mock_response
-            
-            # Call the function
+                'result': {'url': 'https://telegra.ph/Test-Page-01-01'}
+            })
+            mock_response.raise_for_status = MagicMock()
+
+            mock_ctx = AsyncMock()
+            mock_ctx.__aenter__.return_value = mock_response
+            mock_ctx.__aexit__.return_value = False
+
+            mock_session.post = AsyncMock(return_value=mock_ctx)
+
             result = await create_telegraph_page("Test Page", "# Test Content")
-            
-            # Assert the function returned the expected URL
+
             self.assertEqual(result, 'https://telegra.ph/Test-Page-01-01')
-            
-            # Verify the mock was called correctly
-            mock_post.assert_called_once()
-            args, kwargs = mock_post.call_args
-            
-            # Check that the URL is correct
+
+            mock_session.post.assert_awaited_once()
+            args, kwargs = mock_session.post.call_args
             self.assertEqual(args[0], 'https://api.telegra.ph/createPage')
-            
-            # Check that the content was converted to nodes and included in the request
             self.assertIn('data', kwargs)
             self.assertIn('content', kwargs['data'])
-            
-            # Content should be a JSON string of nodes
+
             try:
                 content_nodes = json.loads(kwargs['data']['content'])
                 self.assertIsInstance(content_nodes, list)
@@ -123,20 +121,26 @@ class TestTelegraphFunctionality(unittest.TestCase):
     @pytest.mark.asyncio
     async def test_create_telegraph_page_failure(self):
         """Test failure handling when creating a Telegraph page."""
-        # Mock the requests.post method to simulate failure
-        with patch('requests.post') as mock_post:
-            # Configure the mock to return a failed response
-            mock_response = MagicMock()
-            mock_response.json.return_value = {
+        # Mock the shared HTTP session to simulate failure
+        with patch('bot.handlers.content.get_http_session', new_callable=AsyncMock) as mock_get_session:
+            mock_session = AsyncMock()
+            mock_get_session.return_value = mock_session
+
+            mock_response = AsyncMock()
+            mock_response.json = AsyncMock(return_value={
                 'ok': False,
                 'error': 'SOME_ERROR'
-            }
-            mock_post.return_value = mock_response
-            
-            # Call the function
+            })
+            mock_response.raise_for_status = MagicMock()
+
+            mock_ctx = AsyncMock()
+            mock_ctx.__aenter__.return_value = mock_response
+            mock_ctx.__aexit__.return_value = False
+
+            mock_session.post = AsyncMock(return_value=mock_ctx)
+
             result = await create_telegraph_page("Test Page", "# Test Content")
-            
-            # Assert the function returned None on failure
+
             self.assertIsNone(result)
 
 
