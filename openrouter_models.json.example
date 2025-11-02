@@ -1,0 +1,20 @@
+{
+    "models": [
+        {
+            "name": "Llama 4",
+            "model": "meta-llama/llama-4-maverick:free",
+            "image": true,
+            "video": true,
+            "audio": true,
+            "tools": true
+        },
+        {
+            "name": "DeepSeek R1",
+            "model": "deepseek/deepseek-r1-0528:free",
+            "image": false,
+            "video": false,
+            "audio": false,
+            "tools": false
+        }
+    ]
+}

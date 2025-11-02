@@ -1,7 +1,9 @@
 """Configuration module for the TelegramGroupHelperBot."""
 
+import json
 import logging
 import os
+from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
@@ -85,15 +87,187 @@ OPENROUTER_ALPHA_BASE_URL = os.getenv("OPENROUTER_ALPHA_BASE_URL", "https://open
 OPENROUTER_TEMPERATURE = float(os.getenv("OPENROUTER_TEMPERATURE", "0.7"))
 OPENROUTER_TOP_K = int(os.getenv("OPENROUTER_TOP_K", "40"))
 OPENROUTER_TOP_P = float(os.getenv("OPENROUTER_TOP_P", "0.95"))
-ENABLE_JINA_MCP = os.getenv("ENABLE_JINA_MCP", "true").lower() == "true"
+ENABLE_JINA_MCP = os.getenv("ENABLE_JINA_MCP", "false").lower() == "true"
 JINA_AI_API_KEY = os.getenv("JINA_AI_API_KEY", "")
 JINA_SEARCH_ENDPOINT = os.getenv("JINA_SEARCH_ENDPOINT", "https://s.jina.ai/search")
 JINA_READER_ENDPOINT = os.getenv("JINA_READER_ENDPOINT", "https://r.jina.ai/")
+ENABLE_EXA_SEARCH = os.getenv("ENABLE_EXA_SEARCH", "true").lower() == "true"
+EXA_API_KEY = os.getenv("EXA_API_KEY", "")
+EXA_SEARCH_ENDPOINT = os.getenv("EXA_SEARCH_ENDPOINT", "https://api.exa.ai/search")
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "")
 GROK_MODEL = os.getenv("GROK_MODEL", "")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "")
 LLAMA_MODEL = os.getenv("LLAMA_MODEL", "")
 GPT_MODEL = os.getenv("GPT_MODEL", "")
+
+@dataclass(frozen=True)
+class OpenRouterModelConfig:
+    """Static configuration describing an OpenRouter model option."""
+
+    name: str
+    model: str
+    image: bool = False
+    video: bool = False
+    audio: bool = False
+    tools: bool = True
+
+    def capabilities(self) -> dict[str, bool]:
+        return {
+            "images": self.image,
+            "video": self.video,
+            "audio": self.audio,
+        }
+
+
+def _resolve_openrouter_models_path() -> Path:
+    """Determine where to load the OpenRouter model configuration file from."""
+    env_value = os.getenv("OPENROUTER_MODELS_CONFIG_PATH")
+    candidates: list[Path] = []
+    if env_value:
+        env_path = Path(env_value)
+        candidates.append(env_path if env_path.is_absolute() else Path.cwd() / env_path)
+    candidates.append(Path.cwd() / "openrouter_models.json")
+    candidates.append(Path(__file__).resolve().parent / "openrouter_models.json")
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate.resolve()
+    return candidates[0].resolve()
+
+
+def _load_openrouter_models_from_path(path: Path) -> list[OpenRouterModelConfig]:
+    """Load OpenRouter models from the supplied JSON file."""
+    if not path.exists():
+        logger.info("OpenRouter model config not found at %s", path)
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.error("Failed to load OpenRouter models config from %s: %s", path, exc)
+        return []
+
+    models_data = raw.get("models", [])
+    if not isinstance(models_data, list):
+        logger.error(
+            "Invalid OpenRouter models config in %s: expected 'models' list",
+            path,
+        )
+        return []
+
+    models: list[OpenRouterModelConfig] = []
+    for index, entry in enumerate(models_data):
+        if not isinstance(entry, dict):
+            logger.warning(
+                "Skipping OpenRouter model entry at index %s: expected object",
+                index,
+            )
+            continue
+        name = entry.get("name")
+        model = entry.get("model")
+        if not name or not model:
+            logger.warning(
+                "Skipping OpenRouter model entry at index %s due to missing name/model",
+                index,
+            )
+            continue
+        models.append(
+            OpenRouterModelConfig(
+                name=str(name),
+                model=str(model),
+                image=bool(entry.get("image", False)),
+                video=bool(entry.get("video", False)),
+                audio=bool(entry.get("audio", False)),
+                tools=bool(entry.get("tools", True)),
+            )
+        )
+    return models
+
+
+def _load_legacy_openrouter_models() -> list[OpenRouterModelConfig]:
+    """Fallback to legacy environment variable model configuration."""
+    legacy_entries: list[tuple[str, str, bool, bool, bool, bool]] = [
+        ("Llama 4", LLAMA_MODEL, True, False, False, True),
+        # Preserve Grok for deployments still using legacy env-based configuration.
+        ("Grok 4", GROK_MODEL, True, False, False, True),
+        ("Qwen 3", QWEN_MODEL, False, False, False, True),
+        ("DeepSeek 3.1", DEEPSEEK_MODEL, False, False, False, False),
+        ("GPT", GPT_MODEL, True, False, False, True),
+    ]
+    models: list[OpenRouterModelConfig] = []
+    for name, model_id, image, video, audio, tools in legacy_entries:
+        if model_id:
+            models.append(
+                OpenRouterModelConfig(
+                    name=name,
+                    model=model_id,
+                    image=image,
+                    video=video,
+                    audio=audio,
+                    tools=tools,
+                )
+            )
+    return models
+
+
+def _build_openrouter_models(
+    path: Path,
+) -> tuple[OpenRouterModelConfig, ...]:
+    """Load configured OpenRouter models, falling back to legacy env settings."""
+    models = _load_openrouter_models_from_path(path)
+    if models:
+        logger.info(
+            "Loaded %s OpenRouter model(s) from %s",
+            len(models),
+            path,
+        )
+        return tuple(models)
+
+    legacy_models = _load_legacy_openrouter_models()
+    if legacy_models:
+        logger.info(
+            "Using legacy OpenRouter model configuration with %s model(s)",
+            len(legacy_models),
+        )
+    else:
+        logger.info(
+            "No OpenRouter models configured via JSON or environment variables",
+        )
+    return tuple(legacy_models)
+
+
+OPENROUTER_MODELS_CONFIG_PATH = _resolve_openrouter_models_path()
+OPENROUTER_MODELS: tuple[OpenRouterModelConfig, ...] = _build_openrouter_models(
+    OPENROUTER_MODELS_CONFIG_PATH
+)
+_OPENROUTER_MODELS_BY_MODEL = {model.model: model for model in OPENROUTER_MODELS}
+
+
+def iter_openrouter_models() -> tuple[OpenRouterModelConfig, ...]:
+    """Return the configured OpenRouter models as an immutable tuple."""
+    return OPENROUTER_MODELS
+
+
+def get_openrouter_model_config(model_name: str) -> OpenRouterModelConfig | None:
+    """Return the configuration for the given OpenRouter model identifier."""
+    return _OPENROUTER_MODELS_BY_MODEL.get(model_name)
+
+
+def _resolve_model_by_keyword(value: str, *keywords: str) -> str:
+    """Resolve a model identifier by matching configured models on provided keywords."""
+    if value:
+        return value
+    lowered = [keyword.lower() for keyword in keywords]
+    for config_entry in OPENROUTER_MODELS:
+        haystack = f"{config_entry.name} {config_entry.model}".lower()
+        if all(keyword in haystack for keyword in lowered):
+            return config_entry.model
+    return value
+
+
+LLAMA_MODEL = _resolve_model_by_keyword(LLAMA_MODEL, "llama")
+GROK_MODEL = _resolve_model_by_keyword(GROK_MODEL, "grok")
+QWEN_MODEL = _resolve_model_by_keyword(QWEN_MODEL, "qwen")
+DEEPSEEK_MODEL = _resolve_model_by_keyword(DEEPSEEK_MODEL, "deepseek")
+GPT_MODEL = _resolve_model_by_keyword(GPT_MODEL, "gpt")
 
 # Whether to use webhooks
 USE_WEBHOOK = os.getenv("USE_WEBHOOK", "false").lower() == "true"

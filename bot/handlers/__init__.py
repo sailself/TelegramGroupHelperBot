@@ -57,13 +57,7 @@ from .content import (
 )
 from .qa import (
     MODEL_CALLBACK_PREFIX,
-    MODEL_CAPABILITIES,
-    MODEL_CONFIG_VALUES,
-    MODEL_DEEPSEEK,
     MODEL_GEMINI,
-    MODEL_GROK,
-    MODEL_LLAMA,
-    MODEL_QWEN,
     cleanup_expired_requests,
     create_model_selection_keyboard,
     deepseek_handler,
@@ -89,13 +83,7 @@ from .responses import log_message, send_response
 __all__ = [
     'ImageGenerationError',
     'MODEL_CALLBACK_PREFIX',
-    'MODEL_CAPABILITIES',
-    'MODEL_CONFIG_VALUES',
-    'MODEL_DEEPSEEK',
     'MODEL_GEMINI',
-    'MODEL_GROK',
-    'MODEL_LLAMA',
-    'MODEL_QWEN',
     'RATE_LIMIT_SECONDS',
     'USE_VERTEX_IMAGE',
     'USER_HISTORY_MESSAGE_COUNT',

@@ -10,30 +10,23 @@ from typing import Any, Dict, List, Optional, Union
 from openai import BadRequestError, NotFoundError, OpenAIError, RateLimitError
 
 from bot.config import (
-    ENABLE_JINA_MCP,
+    ENABLE_EXA_SEARCH,
+    EXA_API_KEY,
     GPT_MODEL,
-    JINA_AI_API_KEY,
     OPENROUTER_TEMPERATURE,
     OPENROUTER_TOP_K,
     OPENROUTER_TOP_P,
     QWEN_MODEL,
 )
-from .clients import get_openrouter_client, get_openrouter_responses_client
-from .jina_search import jina_search_tool
+from .clients import get_openrouter_client
+from .exa_search import exa_search_tool, ExaSearchError
 
 logger = logging.getLogger(__name__)
 
-_MCP_SERVER_URL = "https://mcp.jina.ai/sse"
-_MCP_SERVER_LABEL = "jina-mcp"
-_MCP_SERVER_DESCRIPTION = (
-    "Jina AI MCP server providing Reader, web search, and reranker tools."
-)
 MAX_TOOL_CALL_ITERATIONS = 3
 TOOL_LIMIT_SYSTEM_PROMPT = (
     "Tool call limit reached. Provide the best possible answer using the available information without requesting more tool calls."
 )
-
-
 
 
 def parse_gpt_content(content: str) -> dict[str, str]:
@@ -85,34 +78,17 @@ def _parse_openrouter_response(model_name: str, content: str) -> Union[dict[str,
     return content
 
 
-def _build_mcp_tool() -> Dict[str, Any]:
-    """Construct the Jina MCP tool descriptor for the Responses API."""
-    headers: Dict[str, str] = {}
-    if JINA_AI_API_KEY:
-        headers["Authorization"] = f"Bearer {JINA_AI_API_KEY}"
-
-    tool: Dict[str, Any] = {
-        "type": "mcp",
-        "server_label": _MCP_SERVER_LABEL,
-        "server_url": _MCP_SERVER_URL,
-        "server_description": _MCP_SERVER_DESCRIPTION,
-    }
-    if headers:
-        tool["headers"] = headers
-    return tool
-
-
-
 def _build_function_tools() -> List[Dict[str, Any]]:
     """Define function tools exposed to the model via chat completions."""
-    if not ENABLE_JINA_MCP:
+
+    if not ENABLE_EXA_SEARCH or not EXA_API_KEY:
         return []
     return [
         {
             "type": "function",
             "function": {
-                "name": "jina_web_search",
-                "description": "Perform a web search using the Jina AI search API and return summarised results.",
+                "name": "exa_web_search",
+                "description": "Search the web using Exa AI and return a concise Markdown summary of the results.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -132,6 +108,86 @@ def _build_function_tools() -> List[Dict[str, Any]]:
             },
         }
     ]
+
+
+def _coerce_text(value: Any) -> str:
+    """Convert arbitrary message content structures into plain text."""
+
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = [_coerce_text(part) for part in value]
+        return "\n".join(part for part in parts if part.strip())
+    if isinstance(value, dict):
+        if "text" in value:
+            return _coerce_text(value.get("text"))
+        if {"type", "text"} <= value.keys() and value.get("type") == "output_text":
+            return _coerce_text(value.get("text"))
+        # Fall back to first textual field
+        for key in ("content", "value", "message"):
+            if key in value:
+                return _coerce_text(value.get(key))
+        return ""
+    text = getattr(value, "text", None)
+    if text is not None:
+        return _coerce_text(text)
+    if hasattr(value, "model_dump"):
+        return _coerce_text(value.model_dump())
+    return ""
+
+
+def _extract_reasoning_text(payload: Any) -> Optional[str]:
+    """Recursively search for reasoning text within model_extra payloads."""
+
+    if payload is None:
+        return None
+    if isinstance(payload, str):
+        stripped = payload.strip()
+        return stripped or None
+    if isinstance(payload, dict):
+        for key in ("reasoning", "thoughts", "thinking", "explanation", "text", "output_text"):
+            if key in payload:
+                candidate = _extract_reasoning_text(payload.get(key))
+                if candidate:
+                    return candidate
+        for value in payload.values():
+            candidate = _extract_reasoning_text(value)
+            if candidate:
+                return candidate
+        return None
+    if isinstance(payload, list):
+        for item in payload:
+            candidate = _extract_reasoning_text(item)
+            if candidate:
+                return candidate
+        return None
+    if hasattr(payload, "model_dump"):
+        return _extract_reasoning_text(payload.model_dump())
+    return None
+
+
+def _message_content_to_text(message: Any) -> str:
+    """Extract the best-effort text response from a chat completion message."""
+
+    content = _coerce_text(getattr(message, "content", ""))
+    if content.strip():
+        return content
+
+    tool_calls = getattr(message, "tool_calls", None) or []
+    if tool_calls:
+        return content
+
+    extra = getattr(message, "model_extra", None)
+    if not extra and hasattr(message, "additional_kwargs"):
+        extra = getattr(message, "additional_kwargs", {}).get("model_extra")
+    reasoning = _extract_reasoning_text(extra)
+    if reasoning:
+        logger.debug("Falling back to reasoning text from model_extra for final response.")
+        return reasoning
+
+    return content
 
 
 def _message_to_dict(message: Any) -> Dict[str, Any]:
@@ -171,7 +227,7 @@ def _execute_function_tool(call: Any) -> str:
     except json.JSONDecodeError:
         arguments = {}
 
-    if name == "jina_web_search":
+    if name == "exa_web_search":
         query = arguments.get("query")
         max_results = arguments.get("max_results", 5)
         try:
@@ -182,20 +238,14 @@ def _execute_function_tool(call: Any) -> str:
         if not query:
             return "Search failed: missing 'query' parameter."
 
-        lowered = query.lower() if isinstance(query, str) else ""
-        if lowered:
-            logger.debug("Jina search requested with query: %s", query)
-            location_keywords = ("where", "where's", "location", "identify the location", "what city")
-            photo_keywords = ("photo", "picture", "image", "this photo", "this picture")
-            if any(keyword in lowered for keyword in location_keywords) and any(keyword in lowered for keyword in photo_keywords):
-                logger.debug("Skipping Jina search for location-from-photo query: %s", query)
-                return "Search skipped: analyze the provided imagery and respond without additional web searches."
-
         try:
-            payload = jina_search_tool(query, max_results=max_results)
+            payload = exa_search_tool(query, max_results=max_results)
             return payload.get("markdown", f"No results returned for {query}.")
+        except ExaSearchError as exc:
+            logger.error("Exa search tool execution failed: %s", exc, exc_info=True)
+            return f"Search failed: {exc}"
         except Exception as exc:  # noqa: BLE001
-            logger.error("Jina search tool execution failed: %s", exc, exc_info=True)
+            logger.error("Unexpected error during Exa search execution: %s", exc, exc_info=True)
             return f"Search failed: {exc}"
 
     return f"Unsupported tool call: {name}"
@@ -261,98 +311,6 @@ async def _chat_completion_with_tools(
             )
 
 
-def _should_use_responses(has_images: bool, has_video: bool, has_audio: bool) -> bool:
-    """Determine whether to call the Responses API for better tool support."""
-    # The OpenRouter Responses API alpha does not yet accept MCP tool descriptors.
-    # Skip for now and rely on chat completions with function calling.
-    return False
-
-
-def _extract_responses_output(response: Any, model_name: str) -> Optional[Union[dict[str, str], str]]:
-    """Normalize a Responses API payload into bot-friendly data."""
-    if response is None:
-        return None
-
-    output_items = getattr(response, "output", None) or []
-    analysis_parts: List[str] = []
-    final_parts: List[str] = []
-
-    for item in output_items:
-        item_type = getattr(item, "type", None)
-        if item_type == "reasoning":
-            for summary in getattr(item, "summary", []) or []:
-                summary_text = getattr(summary, "text", "").strip()
-                if summary_text:
-                    analysis_parts.append(summary_text)
-            for content in getattr(item, "content", []) or []:
-                text = getattr(content, "text", "").strip()
-                if text:
-                    analysis_parts.append(text)
-        elif item_type == "message":
-            for content in getattr(item, "content", []) or []:
-                content_type = getattr(content, "type", None)
-                if content_type == "output_text":
-                    text = getattr(content, "text", "").strip()
-                    if text:
-                        final_parts.append(text)
-                elif content_type == "refusal":
-                    text = getattr(content, "refusal", "").strip()
-                    if text:
-                        final_parts.append(text)
-
-    final_text = "\n\n".join(part for part in final_parts if part).strip()
-    analysis_text = "\n\n".join(part for part in analysis_parts if part).strip()
-
-    if not final_text:
-        direct_text = getattr(response, "output_text", None)
-        if direct_text:
-            final_text = str(direct_text).strip()
-
-    parsed: Optional[Union[dict[str, str], str]]
-    parsed = _parse_openrouter_response(model_name, final_text) if final_text else None
-
-    if analysis_text:
-        if isinstance(parsed, dict):
-            existing = parsed.get("analysis")
-            # Avoid item assignment if parsed is not a mutable mapping
-            if hasattr(parsed, "copy"):
-                parsed = parsed.copy()
-            parsed.update({
-                "analysis": f"{existing}\n\n{analysis_text}".strip() if existing else analysis_text
-            })
-        else:
-            parsed = {"analysis": analysis_text, "final": parsed or ""}
-
-    return parsed if parsed else None
-
-
-async def _call_openrouter_with_responses(
-    *,
-    system_prompt: str,
-    user_content: str,
-    model_name: str,
-) -> Any:
-    """Invoke OpenRouter Responses API with Jina MCP enabled."""
-    client = get_openrouter_responses_client()
-    tools = [_build_mcp_tool()]
-    return await client.responses.create(
-        model=model_name,
-        instructions=system_prompt,
-        input=[
-            {
-                "role": "user",
-                "content": [
-                    {"type": "input_text", "text": user_content},
-                ],
-            }
-        ],
-        temperature=OPENROUTER_TEMPERATURE,
-        top_p=OPENROUTER_TOP_P,
-        extra_body={"top_k": OPENROUTER_TOP_K},
-        tools=tools,
-    )
-
-
 async def call_openrouter(
     *,
     system_prompt: str,
@@ -365,6 +323,7 @@ async def call_openrouter(
     audio_data: Optional[bytes] = None,
     audio_mime_type: Optional[str] = None,
     model_name: str,
+    supports_tools: bool = True,
 ) -> Optional[Union[dict[str, str], str]]:
     """Call an OpenRouter model and return parsed output."""
 
@@ -376,31 +335,6 @@ async def call_openrouter(
             f"YouTube URL: {url}" for url in youtube_urls
         )
         augmented_user_content += "\n" + youtube_listing
-    has_images = bool(image_data_list)
-    has_video = video_data is not None
-    has_audio = audio_data is not None
-
-    if _should_use_responses(has_images, has_video, has_audio):
-        try:
-            response = await _call_openrouter_with_responses(
-                system_prompt=system_prompt,
-                user_content=augmented_user_content,
-                model_name=model_name,
-            )
-            parsed = _extract_responses_output(response, model_name)
-            if parsed is not None:
-                return parsed
-        except (BadRequestError, NotFoundError) as e:
-            logger.warning(
-                "Responses API unavailable for model %s, falling back to Chat Completions: %s",
-                model_name,
-                e,
-            )
-        except OpenAIError as e:
-            logger.error(
-                "Responses API call failed for model %s: %s", model_name, e, exc_info=True
-            )
-
     def build_messages(include_media: bool = True):
         user_parts = [{"type": "text", "text": augmented_user_content}]
         if include_media:
@@ -437,7 +371,7 @@ async def call_openrouter(
             {"role": "user", "content": user_parts},
         ]
 
-    tools = _build_function_tools()
+    tools = _build_function_tools() if supports_tools else []
 
     async def invoke_chat(include_media: bool) -> Any:
         base_messages = build_messages(include_media=include_media)
@@ -450,9 +384,8 @@ async def call_openrouter(
 
     try:
         completion = await invoke_chat(include_media=True)
-        return _parse_openrouter_response(
-            model_name, completion.choices[0].message.content
-        )
+        message_text = _message_content_to_text(completion.choices[0].message)
+        return _parse_openrouter_response(model_name, message_text)
     except RateLimitError as e:  # pragma: no cover - best effort
         logger.error("Rate limit error calling OpenRouter model %s: %s", model_name, e)
         return {
@@ -468,9 +401,8 @@ async def call_openrouter(
             )
             try:
                 completion = await invoke_chat(include_media=False)
-                return _parse_openrouter_response(
-                    model_name, completion.choices[0].message.content
-                )
+                message_text = _message_content_to_text(completion.choices[0].message)
+                return _parse_openrouter_response(model_name, message_text)
             except OpenAIError as inner_e:  # pragma: no cover - best effort
                 logger.error(
                     "Retry without media failed for model %s: %s", model_name, inner_e, exc_info=True

@@ -75,15 +75,48 @@ Configure the bot by editing the `.env` file:
 ### OpenRouter settings (Optional):
 - `ENABLE_OPENROUTER`: Enable/disable OpenRouter model selection (default: "true")
 - `OPENROUTER_API_KEY`: Your OpenRouter API key for accessing Llama, Qwen, DeepSeek, and GPT models
+- `OPENROUTER_MODELS_CONFIG_PATH`: Optional path to a JSON file that lists the OpenRouter models exposed to the bot (defaults to `openrouter_models.json`)
 - `OPENROUTER_ALPHA_BASE_URL`: Base URL for the alpha Responses API (default: "https://openrouter.ai/api/alpha")
-- `ENABLE_JINA_MCP`: Enable the Jina MCP toolchain for OpenRouter requests (default: "true")
-- `JINA_AI_API_KEY`: Optional Jina API key to unlock higher MCP rate limits and search features
+- `ENABLE_JINA_MCP`: Legacy flag for the deprecated Jina MCP integration (default: "false")
+- `JINA_AI_API_KEY`: Optional Jina API key (only used if you re-enable the legacy MCP integration)
 - `JINA_SEARCH_ENDPOINT`: Jina search API endpoint (default: "https://s.jina.ai/search")
 - `JINA_READER_ENDPOINT`: Jina reader API endpoint (default: "https://r.jina.ai/")
-- `DEEPSEEK_MODEL`: DeepSeek model identifier (e.g., "deepseek/deepseek-v3")
-- `QWEN_MODEL`: Qwen model identifier (e.g., "qwen/qwen-2.5-72b-instruct")
-- `LLAMA_MODEL`: Llama model identifier (e.g., "meta-llama/llama-3.1-405b-instruct")
-- `GPT_MODEL`: GPT model identifier (e.g., "openai/gpt-4o")
+- `ENABLE_EXA_SEARCH`: Enable/disable the Exa-powered search function available to OpenRouter models (default: "true")
+- `EXA_API_KEY`: Exa API key used for the search function
+- `EXA_SEARCH_ENDPOINT`: Exa search API endpoint (default: "https://api.exa.ai/search")
+- `DEEPSEEK_MODEL`, `QWEN_MODEL`, `LLAMA_MODEL`, `GROK_MODEL`, `GPT_MODEL`: Legacy fallback identifiers for direct command shortcuts. These are auto-populated from the JSON config when possible.
+
+Create `openrouter_models.json` (or point `OPENROUTER_MODELS_CONFIG_PATH` to a custom location) to control which OpenRouter models are offered in the `/q` picker. A sample is provided in `openrouter_models.json.example`:
+
+```json
+{
+  "models": [
+    {
+      "name": "Llama 4",
+      "model": "meta-llama/llama-4-maverick:free",
+      "image": true,
+      "video": true,
+      "audio": true,
+      "tools": true
+    },
+    {
+      "name": "DeepSeek R1",
+      "model": "deepseek/deepseek-r1-0528:free",
+      "image": false,
+      "video": false,
+      "audio": false,
+      "tools": false
+    }
+  ]
+}
+```
+
+Field meanings:
+
+- `name`: Friendly label shown in the inline keyboard.
+- `model`: Exact model identifier passed to OpenRouter.
+- `image`/`video`/`audio`: Whether the model can consume the corresponding media types. Models that lack support are hidden when a request includes that media.
+- `tools`: Set to `false` for models that cannot execute tool calls. The bot will fall back to the standard Chat Completions API instead of the OpenRouter Responses API in that case.
 
 ### Telegraph settings:
 - `TELEGRAM_MAX_LENGTH`: Maximum character length before using Telegraph (default: 4000)
@@ -144,10 +177,13 @@ GEMINI_API_KEY=your_gemini_api_key_here
 ENABLE_OPENROUTER=true
 OPENROUTER_API_KEY=your_openrouter_api_key_here
 OPENROUTER_ALPHA_BASE_URL=https://openrouter.ai/api/alpha
-ENABLE_JINA_MCP=true
+ENABLE_JINA_MCP=false
 JINA_AI_API_KEY=
 JINA_SEARCH_ENDPOINT=https://s.jina.ai/search
 JINA_READER_ENDPOINT=https://r.jina.ai/
+ENABLE_EXA_SEARCH=true
+EXA_API_KEY=your_exa_api_key
+EXA_SEARCH_ENDPOINT=https://api.exa.ai/search
 DEEPSEEK_MODEL=deepseek/deepseek-v3
 QWEN_MODEL=qwen/qwen-2.5-72b-instruct
 LLAMA_MODEL=meta-llama/llama-3.1-405b-instruct

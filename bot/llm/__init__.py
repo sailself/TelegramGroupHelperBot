@@ -18,10 +18,9 @@ from bot.config import (
     OPENROUTER_TEMPERATURE,
     OPENROUTER_TOP_K,
     OPENROUTER_TOP_P,
-    ENABLE_JINA_MCP,
-    JINA_AI_API_KEY,
-    JINA_SEARCH_ENDPOINT,
-    JINA_READER_ENDPOINT,
+    ENABLE_EXA_SEARCH,
+    EXA_API_KEY,
+    EXA_SEARCH_ENDPOINT,
     QWEN_MODEL,
     USE_VERTEX_IMAGE,
     USE_VERTEX_VIDEO,
@@ -44,7 +43,7 @@ from .gemini import (
     test_gemini_vision,
 )
 from .media import detect_mime_type, download_media
-from .jina_search import jina_search_tool
+from .exa_search import exa_search_tool, ExaSearchError
 from .openrouter import (
     call_openrouter,
     parse_gpt_content,
@@ -68,10 +67,9 @@ __all__ = [
     'OPENROUTER_TEMPERATURE',
     'OPENROUTER_TOP_K',
     'OPENROUTER_TOP_P',
-    'ENABLE_JINA_MCP',
-    'JINA_AI_API_KEY',
-    'JINA_SEARCH_ENDPOINT',
-    'JINA_READER_ENDPOINT',
+    'ENABLE_EXA_SEARCH',
+    'EXA_API_KEY',
+    'EXA_SEARCH_ENDPOINT',
     'QWEN_MODEL',
     'USE_VERTEX_IMAGE',
     'USE_VERTEX_VIDEO',
@@ -85,7 +83,8 @@ __all__ = [
     'call_openrouter',
     'detect_mime_type',
     'download_media',
-    'jina_search_tool',
+    'exa_search_tool',
+    'ExaSearchError',
     'extract_and_process_image_from_text',
     'generate_image_with_gemini',
     'generate_image_with_vertex',

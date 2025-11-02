@@ -19,8 +19,10 @@ from bot.config import (
     DEFAULT_Q_MODEL,
     DEEPSEEK_MODEL,
     ENABLE_OPENROUTER,
+    get_openrouter_model_config,
     GPT_MODEL,
     GROK_MODEL,
+    iter_openrouter_models,
     LLAMA_MODEL,
     MODEL_SELECTION_TIMEOUT,
     OPENROUTER_API_KEY,
@@ -45,25 +47,77 @@ logger = logging.getLogger(__name__)
 
 MODEL_CALLBACK_PREFIX = "model_select:"
 MODEL_GEMINI = "gemini"
-MODEL_LLAMA = "llama"
-MODEL_QWEN = "qwen"
-MODEL_DEEPSEEK = "deepseek"
-MODEL_GROK = "grok"
 
-MODEL_CAPABILITIES = {
-    MODEL_GEMINI: {"images": True, "video": True, "audio": True},
-    MODEL_LLAMA: {"images": True, "video": True, "audio": True},
-    MODEL_QWEN: {"images": False, "video": False, "audio": False},
-    MODEL_DEEPSEEK: {"images": False, "video": False, "audio": False},
-    MODEL_GROK: {"images": True, "video": False, "audio": False},
+LEGACY_ALIAS_DISPLAY_NAMES = {
+    "llama": "Llama 4",
+    "grok": "Grok 4",
+    "qwen": "Qwen 3",
+    "deepseek": "DeepSeek 3.1",
+    "gpt": "GPT 4.1",
 }
 
-MODEL_CONFIG_VALUES = {
-    MODEL_LLAMA: LLAMA_MODEL,
-    MODEL_GROK: GROK_MODEL,
-    MODEL_QWEN: QWEN_MODEL,
-    MODEL_DEEPSEEK: DEEPSEEK_MODEL,
+OPENROUTER_ALIAS_TO_MODEL = {
+    alias: model_id
+    for alias, model_id in (
+        ("llama", LLAMA_MODEL),
+        ("grok", GROK_MODEL),
+        ("qwen", QWEN_MODEL),
+        ("deepseek", DEEPSEEK_MODEL),
+        ("gpt", GPT_MODEL),
+    )
+    if model_id
 }
+
+
+def resolve_alias_to_model_id(alias: str) -> str | None:
+    """Map a legacy alias to a configured OpenRouter model identifier."""
+    alias_lower = alias.strip().lower()
+    if not alias_lower:
+        return None
+    if alias_lower == MODEL_GEMINI:
+        return MODEL_GEMINI
+    direct = OPENROUTER_ALIAS_TO_MODEL.get(alias_lower)
+    if direct:
+        return direct
+    for config_entry in iter_openrouter_models():
+        haystack = f"{config_entry.name} {config_entry.model}".lower()
+        if alias_lower in haystack:
+            return config_entry.model
+    return None
+
+
+def normalize_model_identifier(identifier: str | None) -> str:
+    """Normalize model identifiers to configured values or fall back to Gemini."""
+    if not identifier:
+        return MODEL_GEMINI
+    stripped = identifier.strip()
+    if not stripped:
+        return MODEL_GEMINI
+    if stripped.lower() == MODEL_GEMINI:
+        return MODEL_GEMINI
+    alias_target = resolve_alias_to_model_id(stripped)
+    if alias_target:
+        return alias_target
+    if get_openrouter_model_config(stripped):
+        return stripped
+    return stripped
+
+
+def get_model_capabilities(model_key: str) -> dict[str, bool]:
+    """Return media capabilities for the given model identifier."""
+    normalized = normalize_model_identifier(model_key)
+    if normalized == MODEL_GEMINI:
+        return {"images": True, "video": True, "audio": True}
+    config = get_openrouter_model_config(normalized)
+    if config:
+        return config.capabilities()
+    alias_target = resolve_alias_to_model_id(model_key)
+    if alias_target and alias_target != normalized:
+        return get_model_capabilities(alias_target)
+    return {"images": False, "video": False, "audio": False}
+
+
+DEFAULT_Q_MODEL_ID = normalize_model_identifier(DEFAULT_Q_MODEL)
 
 pending_q_requests: Dict[str, Dict] = {}
 _cleanup_task: Optional[asyncio.Task] = None
@@ -71,10 +125,12 @@ _cleanup_task: Optional[asyncio.Task] = None
 
 def is_model_configured(model_key: str) -> bool:
     """Return True if the model has a configured identifier."""
-    if model_key == MODEL_GEMINI:
+    resolved = normalize_model_identifier(model_key)
+    if resolved == MODEL_GEMINI:
         return True
-    model_value = MODEL_CONFIG_VALUES.get(model_key)
-    return bool(model_value and model_value.strip())
+    if get_openrouter_model_config(resolved):
+        return True
+    return resolved in OPENROUTER_ALIAS_TO_MODEL.values()
 
 
 def is_openrouter_available() -> bool:
@@ -84,66 +140,40 @@ def is_openrouter_available() -> bool:
 
 def create_model_selection_keyboard(
     *,
-    has_media: bool = False,
     has_images: bool = False,
-    has_av_media: bool = False,
+    has_video: bool = False,
+    has_audio: bool = False,
 ) -> InlineKeyboardMarkup:
-    """Create inline keyboard for model selection.
-
-    Args:
-        has_media: If True, only show media-capable models
-        has_images: Indicates the request includes image content
-        has_av_media: Indicates the request includes video or audio content
-
-    Returns:
-        InlineKeyboardMarkup with model selection buttons
-    """
+    """Create inline keyboard for model selection."""
     gemini_button = InlineKeyboardButton(
         "Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"
     )
-    llama_button = InlineKeyboardButton(
-        "Llama 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_LLAMA}"
-    )
-    grok_button = InlineKeyboardButton(
-        "Grok 4", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GROK}"
-    )
-    qwen_button = InlineKeyboardButton(
-        "Qwen 3", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_QWEN}"
-    )
-    deepseek_button = InlineKeyboardButton(
-        "DeepSeek 3.1", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_DEEPSEEK}"
-    )
-
-    if has_media:
-        keyboard: List[List[InlineKeyboardButton]] = [[gemini_button]]
-        if is_model_configured(MODEL_LLAMA):
-            keyboard[0].append(llama_button)
-
-        if has_av_media:
-            return InlineKeyboardMarkup(keyboard)
-
-        if has_images and is_model_configured(MODEL_GROK):
-            keyboard.append([grok_button])
-
-        return InlineKeyboardMarkup(keyboard)
 
     keyboard: List[List[InlineKeyboardButton]] = [[gemini_button]]
-    if is_model_configured(MODEL_LLAMA):
-        keyboard[0].append(llama_button)
+    openrouter_buttons: List[InlineKeyboardButton] = []
 
-    second_row: List[InlineKeyboardButton] = []
-    if is_model_configured(MODEL_GROK):
-        second_row.append(grok_button)
-    if is_model_configured(MODEL_QWEN):
-        second_row.append(qwen_button)
-    if second_row:
-        keyboard.append(second_row)
+    for model_config in iter_openrouter_models():
+        if has_images and not model_config.image:
+            continue
+        if has_video and not model_config.video:
+            continue
+        if has_audio and not model_config.audio:
+            continue
+        model_identifier = model_config.model.strip()
+        if not model_identifier:
+            continue
+        openrouter_buttons.append(
+            InlineKeyboardButton(
+                model_config.name,
+                callback_data=f"{MODEL_CALLBACK_PREFIX}{model_identifier}",
+            )
+        )
 
-    third_row: List[InlineKeyboardButton] = []
-    if is_model_configured(MODEL_DEEPSEEK):
-        third_row.append(deepseek_button)
-    if third_row:
-        keyboard.append(third_row)
+    if openrouter_buttons:
+        keyboard[0].append(openrouter_buttons.pop(0))
+
+    for index in range(0, len(openrouter_buttons), 2):
+        keyboard.append(openrouter_buttons[index : index + 2])
 
     return InlineKeyboardMarkup(keyboard)
 
@@ -747,14 +777,15 @@ async def q_handler(
         # OpenRouter is available - show model selection
         # Check if media is present to determine which models to show
         has_images = bool(image_data_list)
-        has_av_media = bool(video_data or audio_data)
-        has_media = has_images or has_av_media
+        has_video = bool(video_data)
+        has_audio = bool(audio_data)
+        has_media = has_images or has_video or has_audio
 
         # Create model selection keyboard
         keyboard = create_model_selection_keyboard(
-            has_media=has_media,
             has_images=has_images,
-            has_av_media=has_av_media,
+            has_video=has_video,
+            has_audio=has_audio,
         )
         
         # Create selection message text
@@ -870,7 +901,8 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
         return
 
     # Extract selected model
-    selected_model = query.data[len(MODEL_CALLBACK_PREFIX):]
+    selected_model_token = query.data[len(MODEL_CALLBACK_PREFIX):]
+    selected_model = normalize_model_identifier(selected_model_token)
     
     # Get request key from message info
     chat_id = query.message.chat.id
@@ -891,7 +923,7 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
         await query.edit_message_text("Oops! This request has vanished into the void. Maybe it went for a coffee break ☕️.")
         return
     
-    if not is_model_configured(selected_model):
+    if not is_model_configured(selected_model_token):
         await query.answer("That model is not configured for this bot yet.", show_alert=True)
         return
     
@@ -912,17 +944,31 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
     
     try:
         # Update the selection message to show processing
-        processing_text = f"Processing your question with {get_model_display_name(selected_model)}..."
+        display_name = get_model_display_name(selected_model)
+        processing_text = f"Processing your question with {display_name}..."
         if request_data.get("video_data"):
-            processing_text = f"Analyzing video and processing your question with {get_model_display_name(selected_model)}..."
+            processing_text = (
+                f"Analyzing video and processing your question with {display_name}..."
+            )
         elif request_data.get("audio_data"):
-            processing_text = f"Analyzing audio and processing your question with {get_model_display_name(selected_model)}..."
+            processing_text = (
+                f"Analyzing audio and processing your question with {display_name}..."
+            )
         elif request_data.get("image_data_list"):
-            processing_text = f"Analyzing {len(request_data['image_data_list'])} image(s) and processing your question with {get_model_display_name(selected_model)}..."
+            processing_text = (
+                f"Analyzing {len(request_data['image_data_list'])} image(s) "
+                f"and processing your question with {display_name}..."
+            )
         elif request_data.get("twitter_contents"):
-            processing_text = f"Analyzing {len(request_data['twitter_contents'])} Twitter post(s) and processing your question with {get_model_display_name(selected_model)}..."
+            processing_text = (
+                f"Analyzing {len(request_data['twitter_contents'])} Twitter post(s) "
+                f"and processing your question with {display_name}..."
+            )
         elif request_data.get("youtube_urls") and len(request_data["youtube_urls"]) > 0:
-            processing_text = f"Analyzing {len(request_data['youtube_urls'])} YouTube video(s) and processing your question with {get_model_display_name(selected_model)}..."
+            processing_text = (
+                f"Analyzing {len(request_data['youtube_urls'])} YouTube video(s) "
+                f"and processing your question with {display_name}..."
+            )
         
         await query.edit_message_text(processing_text)
         
@@ -937,7 +983,7 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
         )
         
         # Determine if pro model should be used
-        capabilities = MODEL_CAPABILITIES.get(selected_model, {})
+        capabilities = get_model_capabilities(selected_model)
         supports_images = capabilities.get("images", False)
         supports_video = capabilities.get("video", False)
         supports_audio = capabilities.get("audio", False)
@@ -1003,31 +1049,62 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
 
 
 def get_model_display_name(model_key: str) -> str:
-    """Get display name for model key."""
-    display_names = {
-        MODEL_GEMINI: "Gemini 2.5 ✨",
-        MODEL_LLAMA: "Llama 4",
-        MODEL_GROK: "Grok 4",
-        MODEL_QWEN: "Qwen 3",
-        MODEL_DEEPSEEK: "DeepSeek 3.1"
-    }
-    return display_names.get(model_key, model_key)
+    """Return a human-friendly display name for the given model key."""
+    normalized = normalize_model_identifier(model_key)
+    if normalized == MODEL_GEMINI:
+        return "Gemini 2.5 ✨"
+
+    config = get_openrouter_model_config(normalized)
+    if config:
+        return config.name
+
+    alias = model_key.strip().lower() if model_key else ""
+    if alias in OPENROUTER_ALIAS_TO_MODEL:
+        mapped_identifier = OPENROUTER_ALIAS_TO_MODEL[alias]
+        mapped_config = get_openrouter_model_config(mapped_identifier)
+        if mapped_config:
+            return mapped_config.name
+        return LEGACY_ALIAS_DISPLAY_NAMES.get(alias, mapped_identifier)
+
+    return LEGACY_ALIAS_DISPLAY_NAMES.get(alias, normalized)
 
 
 def get_model_function_and_name(model_key: str) -> tuple:
     """Get model function and name for the given model key."""
-    if model_key == MODEL_GEMINI:
-        return call_gemini, None  # Default Gemini model
-    elif model_key == MODEL_LLAMA and is_model_configured(MODEL_LLAMA):
-        return partial(call_openrouter, model_name=LLAMA_MODEL), LLAMA_MODEL
-    elif model_key == MODEL_GROK and is_model_configured(MODEL_GROK):
-        return partial(call_openrouter, model_name=GROK_MODEL), GROK_MODEL
-    elif model_key == MODEL_QWEN and is_model_configured(MODEL_QWEN):
-        return partial(call_openrouter, model_name=QWEN_MODEL), QWEN_MODEL
-    elif model_key == MODEL_DEEPSEEK and is_model_configured(MODEL_DEEPSEEK):
-        return partial(call_openrouter, model_name=DEEPSEEK_MODEL), DEEPSEEK_MODEL
-    else:
+    normalized = normalize_model_identifier(model_key)
+    if normalized == MODEL_GEMINI:
         return call_gemini, None
+
+    config = get_openrouter_model_config(normalized)
+    supports_tools = config.tools if config else True
+    if normalized in OPENROUTER_ALIAS_TO_MODEL.values() or config:
+        return (
+            partial(
+                call_openrouter,
+                model_name=normalized,
+                supports_tools=supports_tools,
+            ),
+            normalized,
+        )
+
+    return call_gemini, None
+
+
+def _build_openrouter_command(alias: str, fallback: str) -> tuple | None:
+    """Return a callable and model identifier for legacy command handlers."""
+    candidate = resolve_alias_to_model_id(alias) or fallback.strip()
+    if not candidate or candidate == MODEL_GEMINI:
+        return None
+    config = get_openrouter_model_config(candidate)
+    supports_tools = config.tools if config else True
+    return (
+        partial(
+            call_openrouter,
+            model_name=candidate,
+            supports_tools=supports_tools,
+        ),
+        candidate,
+    )
 
 
 async def cleanup_expired_requests(bot=None):
@@ -1070,8 +1147,9 @@ async def handle_model_timeout(request_key: str, bot) -> None:
     del pending_q_requests[request_key]
 
     try:
+        default_model = DEFAULT_Q_MODEL_ID
         processing_text = (
-            f"No model selected in time. Using {get_model_display_name(DEFAULT_Q_MODEL)}..."
+            f"No model selected in time. Using {get_model_display_name(default_model)}..."
         )
         processing_message = await bot.edit_message_text(
             chat_id=request_data["chat_id"],
@@ -1079,7 +1157,7 @@ async def handle_model_timeout(request_key: str, bot) -> None:
             text=processing_text,
         )
 
-        call_model, model_name = get_model_function_and_name(DEFAULT_Q_MODEL)
+        call_model, model_name = get_model_function_and_name(default_model)
 
         current_datetime = datetime.utcnow().strftime("%H:%M:%S %B %d, %Y")
         system_prompt = Q_SYSTEM_PROMPT.format(
@@ -1088,13 +1166,9 @@ async def handle_model_timeout(request_key: str, bot) -> None:
         )
 
         capability_key = (
-            DEFAULT_Q_MODEL
-            if DEFAULT_Q_MODEL == MODEL_GEMINI or is_model_configured(DEFAULT_Q_MODEL)
-            else MODEL_GEMINI
+            default_model if is_model_configured(default_model) else MODEL_GEMINI
         )
-        capabilities = MODEL_CAPABILITIES.get(
-            capability_key, MODEL_CAPABILITIES[MODEL_GEMINI]
-        )
+        capabilities = get_model_capabilities(capability_key)
         supports_images = capabilities.get("images", False)
         supports_video = capabilities.get("video", False)
         supports_audio = capabilities.get("audio", False)
@@ -1201,39 +1275,59 @@ async def stop_periodic_cleanup():
 
 async def deepseek_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /deepseek command."""
+    result = _build_openrouter_command("deepseek", DEEPSEEK_MODEL)
+    if result is None:
+        await update.effective_message.reply_text("DeepSeek model is not configured.")
+        return
+    call_model, model_identifier = result
     await q_handler(
         update,
         context,
-        call_model=partial(call_openrouter, model_name=DEEPSEEK_MODEL),
-        model_name=DEEPSEEK_MODEL,
+        call_model=call_model,
+        model_name=model_identifier,
     )
 
 
 async def qwen_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /qwen command."""
+    result = _build_openrouter_command("qwen", QWEN_MODEL)
+    if result is None:
+        await update.effective_message.reply_text("Qwen model is not configured.")
+        return
+    call_model, model_identifier = result
     await q_handler(
         update,
         context,
-        call_model=partial(call_openrouter, model_name=QWEN_MODEL),
-        model_name=QWEN_MODEL,
+        call_model=call_model,
+        model_name=model_identifier,
     )
 
 
 async def llama_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /llama command."""
+    result = _build_openrouter_command("llama", LLAMA_MODEL)
+    if result is None:
+        await update.effective_message.reply_text("Llama model is not configured.")
+        return
+    call_model, model_identifier = result
     await q_handler(
         update,
         context,
-        call_model=partial(call_openrouter, model_name=LLAMA_MODEL),
-        model_name=LLAMA_MODEL,
+        call_model=call_model,
+        model_name=model_identifier,
     )
 
 
 async def gpt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle the /gpt command."""
+    result = _build_openrouter_command("gpt", GPT_MODEL)
+    if result is None:
+        await update.effective_message.reply_text("GPT model is not configured.")
+        return
+    call_model, model_identifier = result
     await q_handler(
         update,
         context,
-        call_model=partial(call_openrouter, model_name=GPT_MODEL),
-        model_name=GPT_MODEL,
+        call_model=call_model,
+        model_name=model_identifier,
     )
