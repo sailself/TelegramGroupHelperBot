@@ -20,6 +20,8 @@ from bot.config import (
     DEEPSEEK_MODEL,
     ENABLE_OPENROUTER,
     get_openrouter_model_config,
+    GEMINI_MODEL,
+    GEMINI_PRO_MODEL,
     GPT_MODEL,
     GROK_MODEL,
     iter_openrouter_models,
@@ -146,7 +148,7 @@ def create_model_selection_keyboard(
 ) -> InlineKeyboardMarkup:
     """Create inline keyboard for model selection."""
     gemini_button = InlineKeyboardButton(
-        "Gemini 2.5 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"
+        "Gemini 3 ✨", callback_data=f"{MODEL_CALLBACK_PREFIX}{MODEL_GEMINI}"
     )
 
     keyboard: List[List[InlineKeyboardButton]] = [[gemini_button]]
@@ -248,6 +250,7 @@ async def process_q_request_with_gemini(
         use_pro_model = bool(
             video_data or image_data_list or audio_data or youtube_urls
         )
+        model_used = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
 
         # Call Gemini
         response = await call_gemini(
@@ -264,6 +267,7 @@ async def process_q_request_with_gemini(
 
         if response:
             resp_text = response if isinstance(response, str) else response.get("final", "")
+            resp_text = f"{resp_text}\n\n_Model: {model_used}_"
             await send_response(
                 processing_message,
                 resp_text,
@@ -368,6 +372,7 @@ async def process_q_request_with_specific_model(
             or temp_image_data_list
             or temp_audio_data
         )
+        gemini_model_used = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
 
         # Call the specified model
         response = await call_model(
@@ -393,8 +398,11 @@ async def process_q_request_with_specific_model(
             else:
                 resp_text = response if isinstance(response, str) else response.get("final", "")
             
-            if model_name:
-                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
+            model_label = model_name
+            if call_model is call_gemini:
+                model_label = model_label or gemini_model_used
+            if model_label:
+                resp_text = f"{resp_text}\n\n_Model: {model_label}_"
             
             await send_response(
                 processing_message,
@@ -1052,7 +1060,7 @@ def get_model_display_name(model_key: str) -> str:
     """Return a human-friendly display name for the given model key."""
     normalized = normalize_model_identifier(model_key)
     if normalized == MODEL_GEMINI:
-        return "Gemini 2.5 ✨"
+        return "Gemini 3 ✨"
 
     config = get_openrouter_model_config(normalized)
     if config:
@@ -1185,6 +1193,7 @@ async def handle_model_timeout(request_key: str, bot) -> None:
             or audio_data
             or request_data.get("youtube_urls")
         )
+        gemini_model_used = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
 
         response = await call_model(
             system_prompt=system_prompt,
@@ -1211,8 +1220,11 @@ async def handle_model_timeout(request_key: str, bot) -> None:
                     response if isinstance(response, str) else response.get("final", "")
                 )
 
-            if model_name:
-                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
+            model_label = model_name
+            if call_model is call_gemini:
+                model_label = model_label or gemini_model_used
+            if model_label:
+                resp_text = f"{resp_text}\n\n_Model: {model_label}_"
 
             await send_response(
                 processing_message,

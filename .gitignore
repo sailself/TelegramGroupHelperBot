@@ -38,6 +38,9 @@ htmlcov/
 *.log
 logs/
 
+# Agent logs
+agent_logs/
+
 # Virtual environment
 venv/
 .venv/
@@ -49,3 +52,5 @@ ENV/
 *.swp
 *.swo 
 test_veo3.py
+
+openrouter_models.json

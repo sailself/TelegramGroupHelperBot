@@ -1,105 +1,110 @@
-# AGENTS Guide
+# AGENTS Handbook
 
-Authoritative checklist for contributors working inside `TelegramGroupHelperBot`. Read this document before opening a PR or running automation.
+Guide for autonomous contributors working inside `TelegramGroupHelperBot`. Keep this close when modifying code or running automation.
 
-## Repository Map
-- `bot/` — runtime code (`main.py`, `config.py`, handlers, db helpers, llm adapters, utils).
-- `bot/tools/` — standalone async helpers (Telegraph/Twitter extractors, CWD uploader).
-- `bot/db/` + `migrations/` — SQLAlchemy models, async engine bootstrap, Alembic revisions.
-- `tests/unit/` & `tests/integration/` — pytest suites mirroring runtime modules.
-- `docs/module_summary.md` — up-to-date description of every module/function (read before editing unfamiliar code).
-- Supporting assets live under `.github/`, `fly.toml`, `logs/`, and deployment scripts.
+## Architecture Overview
+- Telegram entrypoint is `bot/main.py`, which builds the async `Application`, registers handlers, warms the DB/whitelist, and runs in webhook or polling mode. Shutdown closes the shared HTTP session.
+- Configuration lives in `bot/config.py`: environment loading, logging bootstrap (timed rotating file + console), prompt constants, model toggles, rate limits, and OpenRouter model discovery (JSON or legacy env).
+- Handlers in `bot/handlers/` orchestrate Telegram flows, call LLM helpers from `bot/llm/`, and persist messages via the async queue in `bot/db/database.py`.
+- Data persistence uses SQLAlchemy async engine with a background writer task consuming `message_queue`; migrations are under `migrations/`.
+- HTTP calls share a single `aiohttp` session (`bot/utils/http.py`). External content helpers live in `bot/tools/`.
+- Tests mirror runtime modules under `tests/unit` and `tests/integration` (pytest + pytest-asyncio).
 
-## Setup & Tooling
-1. **Environment**: Python 3.13+, Poetry installed. Copy `.env.example` to `.env` and populate required secrets (Telegram BOT_TOKEN, Gemini/OpenRouter keys, database URL). Never commit filled `.env`.
-2. **Bootstrap**:
-   ```bash
-   poetry install          # or: make setup
-   poetry run alembic upgrade head
-   ```
-3. **Common commands**:
-   - `make run` / `poetry run python -m bot.main` — start the bot (loads whitelist & DB writer).
-   - `make test` / `pytest` — run full suite. Use `pytest -m "not integration"` for quick checks.
-   - `make lint` (`poetry run ruff check .`) and `make typecheck` (`poetry run mypy bot tests`) must be clean before pushing.
-   - `make migrate` wraps `alembic upgrade head`. Never mix schema changes with feature code.
-   - `make deploy` assumes Fly.io CLI is authenticated.
+## Module Guide
+- **Top-level scripts**
+  - `get_chat_id.py`: Tiny polling bot that echoes user/chat identifiers for whitelist management.
+  - `tmp_query_chat_ids.py`: SQLite inspector that aggregates `chat_id` usage across tables.
+- **bot/config.py**
+  - Loads `.env`, creates `logs/bot.log` via `TimedRotatingFileHandler`, and sets console logging.
+- Defines all env-driven toggles (Gemini, Vertex, OpenRouter, Exa, Jina, CWD.PW, whitelist, webhook/polling, support copy) and prompt templates (`TLDR_SYSTEM_PROMPT` etc. - leave as-is even if they look garbled).
+  - `OpenRouterModelConfig` plus helpers `iter_openrouter_models`, `get_openrouter_model_config`, `_resolve_model_by_keyword` to wire JSON/env model configs.
+- **bot/main.py**
+  - Builds the Telegram `Application`, registers every command and callback, attaches message logging, runs `init_db_wrapper()` (init DB + load whitelist), and starts webhook/polling. Uses `close_http_session` on shutdown.
+- **bot/utils/http.py**
+  - Provides a process-wide `aiohttp.ClientSession` guarded by an asyncio lock (`get_http_session` / `close_http_session`); default timeout 30s.
+- **bot/db/models.py**
+  - SQLAlchemy `Message` model with unique `(chat_id, message_id)`, indexed fields for chat/user/date/text metadata.
+- **bot/db/database.py**
+  - Async engine/session factory; `init_db` creates tables and spawns `db_writer`.
+  - `db_writer` upserts messages from `message_queue`, handling race `IntegrityError` with an update retry.
+  - Query helpers: `select_messages`, `select_messages_by_user`, `select_messages_from_id`, `get_last_n_text_messages`, `get_messages_from_id`.
+  - `queue_message_insert` enqueues message data (defaults `chat_id` to user_id when missing).
+- **bot/handlers/access.py**
+  - Rate limiting via in-memory timestamps. Whitelist loader/cacher (`load_whitelist`), checks (`is_user_whitelisted`, `is_chat_whitelisted`, `is_access_allowed`), command gating (`requires_access_control`, `check_access_control`).
+- **bot/handlers/responses.py**
+  - `send_response` edits messages and auto-offloads to Telegraph when >22 lines or `TELEGRAM_MAX_LENGTH`; truncates as last resort.
+  - `log_message` detects language via `langid`/`pycountry`, normalizes username, and enqueues DB inserts.
+- **bot/handlers/content.py**
+- Markdown/HTML -> Telegraph nodes, `create_telegraph_page`, YouTube URL extraction, Telegraph/Twitter content expansion with media download helpers (`download_telegraph_media`, `download_twitter_media`). Strict Twitter/X host allowlist.
+- **bot/handlers/commands.py**
+  - Implements `/tldr`, `/factcheck`, `/img`, `/vid`, `/paintme` `/portraitme`, `/profileme`, `/start`, `/help`, `/support`, plus media-group caching.
+- Pattern: access check -> rate limit -> "processing..." reply -> gather context/media (including Telegraph/Twitter extraction) -> call LLM/media helpers -> respond via `send_response` or direct media send. Logs errors with `exc_info`.
+- **bot/handlers/qa.py**
+  - `/q` flow and model-selection callbacks; alias resolution for OpenRouter models vs Gemini; capability filtering for media; pending request registry with timeouts (`handle_model_timeout`, `cleanup_expired_requests`, `periodic_cleanup_task`).
+  - `process_q_request_with_gemini` / `process_q_request_with_specific_model` route to Gemini/OpenRouter; enforces original requester on callbacks and hides unsupported models when media is present.
+- **bot/handlers/__init__.py**
+  - Re-exports handlers, access helpers, and shared constants for easy imports in `bot.main`.
+- **bot/llm/clients.py**
+  - Lazy singletons for Gemini, OpenRouter (standard + Responses API), and Vertex (when enabled).
+- **bot/llm/gemini.py**
+  - `call_gemini` (text or media-aware with search grounding/URL context), `call_gemini_with_media`, streaming/test helpers, image generation (`generate_image_with_gemini`, `generate_image_with_vertex`), video generation via VEO (`generate_video_with_veo`), base64 image extraction, MIME detection integration.
+- **bot/llm/openrouter.py**
+  - OpenRouter chat completions with optional Exa function-calling (`exa_web_search`), GPT/Qwen reasoning parsers, media embedding via base64, retries without media on model errors, tool-call iteration cap.
+- **bot/llm/exa_search.py**
+  - Exa API client/formatter and function-call payload builder; raises `ExaSearchError` when misconfigured.
+- **bot/llm/jina_search.py**
+  - Legacy Jina search/reader with regex parsing into dataclasses and Markdown formatter.
+- **bot/llm/media.py**
+  - `detect_mime_type` via magic numbers; `download_media` using the shared HTTP session with robust error logging.
+- **bot/tools/cwd_uploader.py**
+  - Manual multipart upload to cwd.pw from base64 or bytes; validates MIME/extension and logs failures.
+- **bot/tools/telegraph_extractor.py**
+  - Fetches Telegraph pages via API, extracts text plus image/video URLs, and normalizes relative links.
+- **bot/tools/twitter_extractor.py**
+  - Validates/normalizes Twitter/X URLs, fetches via r.jina.ai proxy, cleans Markdown, deduplicates media, and returns formatted content + media lists.
+- **tests/**
+  - Unit tests cover LLM helpers, handlers, language handling, CWD uploader, whitelist, and content conversion; integration tests exercise `/q`, `/tldr`, and Telegraph flows with mocked HTTP.
+- **migrations/**
+  - Alembic async `env.py` plus revisions for initial schema and unique constraint enforcement.
 
-## Coding Practices
-### Language & Style
-- Target Python 3.13 async/await. 4-space indents, ≤100 char lines, Black-compatible formatting (enforced by Ruff). Keep imports sorted (`ruff I`) and prefer explicit relative imports inside packages.
-- Public constants go in `bot/config.py`. Keep prompt strings and env defaults there.
-- Use dataclasses or TypedDicts when exchanging structured data with LLM helpers to satisfy mypy’s strict mode.
+## Coding Style & Conventions
+- Target Python 3.11+ (per `pyproject.toml`); async-first codebase. 4-space indent, Ruff line length 100, imports sorted (`ruff I`). Mypy is strict (`disallow_untyped_defs`, `no_implicit_optional`, etc.) - type new code accordingly.
+- Logging: use `logging.getLogger(__name__)`; avoid `print` and avoid reconfiguring handlers (config.py sets rotating file + console).
+- HTTP: reuse `get_http_session()`; do not create ad-hoc sessions; handle `ClientError`/timeouts explicitly.
+- DB: never block the event loop with sync calls; enqueue via `queue_message_insert` and let `db_writer` upsert. Respect `(chat_id, message_id)` uniqueness and keep `get_session` context managers around DB work.
+- Telegram handlers: always guard `effective_message`/`effective_chat`, run `check_access_control`, enforce `is_rate_limited`, send a processing placeholder, and route long replies through `send_response`. Register handlers in `bot/main.py` and export via `bot/handlers/__init__.py`; update help text when user-facing commands change.
+- Access control: whitelist IDs live in `allowed_chat.txt` (path via `WHITELIST_FILE_PATH`). Missing file means "allow all." Keep cache coherent by calling `load_whitelist()` on startup.
+- LLM usage:
+  - Prefer `call_gemini`; set `use_pro_model` when media is present. Pass `youtube_urls`, `image_data_list`, `video_data`, or `audio_data` instead of embedding URLs to keep capability filtering accurate.
+  - Use `call_openrouter` only for configured models; provide `supports_tools=False` for models lacking tool support. Keep Exa search enabled via config when expecting tool calls.
+- Media/content handling: use helpers in `content.py` and `media.py`; respect host allowlists; observe `max_images`/`max_videos` defaults in download helpers; prefer `download_media` instead of new fetchers.
+- Error handling: wrap risky sections with broad `except Exception as exc` and log `exc_info=True`; present user-friendly messages without leaking secrets. `send_response` already handles Telegram length errors via Telegraph or truncation.
+- Prompts/config: prompt constants (e.g., `TLDR_SYSTEM_PROMPT`) include non-ASCII artifacts - do not "clean" them. Keep env defaults centralized in `config.py`.
+- Testing: use pytest/pytest-asyncio. Ruff/mypy configs live in `pyproject.toml`. Run unit/integration tests matching touched areas.
 
-### Async & IO
-- All Telegram handlers must be `async` and guard against `None` `effective_message`/`effective_chat`.
-- Use `bot.utils.http.get_http_session()` instead of creating ad-hoc `aiohttp` clients.
-- Never block the event loop with synchronous DB calls; enqueue writes via `queue_message_insert` and use the async selectors in `bot.db.database`.
-- When downloading or uploading media, respect the max limits used in `content.py` (`max_images`, `max_videos`) and reuse the helpers already there.
+## Modularity & Layering
+- Handlers manage Telegram I/O and assemble context; LLM modules perform API calls; tools/content helpers handle remote data extraction; DB modules isolate persistence.
+- Reuse shared HTTP session and download helpers; do not let handlers talk directly to low-level HTTP without going through utilities.
+- Keep DB writes asynchronous via the queue; avoid business logic inside `db_writer`.
+- Preserve separation: LLM helpers are Telegram-agnostic; only handlers should import Telegram types.
 
-### Handlers & Commands
-- Every command must:
-  1. `await check_access_control(update, "<command>")`
-  2. Enforce `is_rate_limited(...)`
-  3. Provide a “processing…” placeholder via `reply_text`
-  4. Call `send_response(...)` so long replies auto-migrate to Telegraph.
-- Register new handlers in `bot/main.py` **and** export them through `bot/handlers/__init__.py`. Update `/help` text when adding user-facing commands.
-- When touching `/q` flows, keep `pending_q_requests` coherence: write through `q_handler`, make sure keyboards use `MODEL_CALLBACK_PREFIX`, and update `docs/module_summary.md` plus inline comments to explain any new callback data.
+## Feature & Refactor Recipes
+- **New command/handler**: create async handler in `bot/handlers/commands.py` (or dedicated module), apply access/rate guards, send processing message, call LLM/content helpers, reply via `send_response` or Telegram media APIs. Register in `bot/main.py`, export via `bot/handlers/__init__.py`, and update `/help` + `docs/module_summary.md`. Add pytest coverage (unit for logic, integration for end-to-end flows).
+- **Add OpenRouter model**: update `openrouter_models.json` (or env variables) with capability flags (`image`/`video`/`audio`/`tools`). Ensure aliases in `config.py` if you expect `/deepseek`/`/llama`/etc. to resolve. Mention in README/help if user-facing.
+- **DB schema change**: create Alembic revision under `migrations/versions/`, update `bot/db/models.py`, adjust selectors, and avoid mixing schema changes with feature code.
+- **New HTTP helper or extractor**: place in `bot/utils` or `bot/tools`, reuse `get_http_session`, and add targeted unit tests.
+- **Logging additions**: use module loggers and include context (chat_id/user_id/model); avoid printing secrets or raw prompts.
 
-### LLM Integrations
-- Prefer `call_gemini` for Gemini tasks and `call_openrouter` for OpenRouter. Only bypass them if you are adding low-level capabilities (e.g., new tool-calling support) and mirror their error-handling patterns.
-- When enabling media-aware prompts, set `youtube_urls`, `image_data_list`, `video_data`, etc., instead of embedding URLs manually. This keeps `get_model_capabilities` filtering accurate.
-- Respect `ENABLE_EXA_SEARCH`, `ENABLE_JINA_MCP`, and other feature toggles; don’t assume APIs are available.
-- When adding prompts, place the template in `bot/config.py` alongside existing system prompts and document the placeholder variables.
-
-### Database & Persistence
-- Schema changes go through Alembic revisions under `migrations/versions/`. Use `alembic revision --autogenerate -m "..."` and review the diff for unintended drops.
-- Do not bypass the message queue. If you need new tables, expose typed selectors similar to `select_messages_by_user`.
-- For cron-like logic (cleanup jobs, cache refresh), follow the pattern in `bot/handlers/qa.py` (`start_periodic_cleanup` / `stop_periodic_cleanup`) to avoid orphaned tasks.
-
-### Logging, Errors, & Telemetry
-- Obtain module-level loggers (`logging.getLogger(__name__)`). Avoid `print`.
-- Wrap risky sections in `try/except Exception as exc` and log with `exc_info=True`. Surface user-friendly error text while keeping sensitive details in logs only.
-- Use the rotating file handler configured in `bot/config.py`; do not reconfigure logging elsewhere.
-
-### Security & Secrets
-- Keep Telegram allowlisted IDs in `allowed_chat.txt`. Update `_whitelist_cache` via `load_whitelist()` after editing or expose an admin command if runtime reload is needed.
-- Never log API keys, user tokens, or raw prompts that may contain secrets. Scrub them before logging.
-- When adding downloads/uploads, validate hosts (see `_is_twitter_url`) and sanitize URLs to avoid SSRF.
-
-## Testing & QA
-- Unit tests belong beside the module they exercise (`tests/unit/test_<module>.py`). Integration tests should cover async Telegram flows end-to-end using mocks (see existing integration suites).
-- For handler changes, add regression tests that simulate Telegram `Update` objects. Favor `IsolatedAsyncioTestCase` or `pytest.mark.asyncio`.
-- When fixing bugs, add assertions reproducing the failure (e.g., whitelist edge cases, language detection). Mention new tests in the PR description.
-- Run `pytest --asyncio-mode=auto --cov=bot` locally when touching handlers or LLM integrations; keep coverage deltas neutral or positive.
-
-## Deployment & Operations
-- The bot can run in webhook or polling mode. When toggling `USE_WEBHOOK`, ensure Fly.io/Gateway configs match and environment variables (`WEBHOOK_URL`, `WEBHOOK_PORT`) are updated.
-- Before deploying:
-  1. `make lint typecheck test`
-  2. `poetry run pytest -m "integration"` if you touched long response flows, Telegraph, or OpenRouter.
-  3. Verify `docs/module_summary.md` remains accurate.
-  4. Confirm `logs/bot.log` stays under rotation control—do not commit it.
-- Telemetry/resiliency:
-  - Long replies must call `create_telegraph_page` via `send_response`.
-  - For streaming LLM responses, reuse `stream_gemini` and ensure queues are drained to avoid memory leaks.
-
-## Contribution Workflow
-1. Create a descriptive branch: `feature/<short-description>` or `fix/<issue-id>`.
-2. Keep commits focused. Subject lines should be imperative and ≤72 chars (`Add portrait mode handler`).
-3. Summaries in PRs must cover:
-   - Behaviour changes
-   - Manual validation (commands run, sample chat flows)
-   - Tests executed (`make test`, selective pytest markers)
-   - Any new env vars/secrets or Fly.io steps.
-4. Before requesting review, ensure CI is green and lint/typecheck/test have been run locally.
+## Pitfalls & Invariants
+- Logging is configured in `config.py`; re-calling `basicConfig` may interfere. Prefer module loggers.
+- `pending_q_requests` keys combine chat/user/selection message; ensure cleanup paths are preserved when altering `/q` flow (timeouts and `periodic_cleanup_task`).
+- `queue_message_insert` defaults `chat_id` to `user_id` when absent - supply chat_id explicitly for group context.
+- `send_response` will create Telegraph pages when long; give meaningful titles and expect edits to the processing message rather than new sends.
+- Twitter extraction enforces host allowlist; unsupported hosts will be skipped with logged warnings.
+- Rate limits are in-memory; restarts reset them.
+- Some help/response strings include playful Unicode; keep them stable to avoid test breaks.
 
 ## Agent Activity Logging
-- Every autonomous agent session must emit an execution diary under `agent_logs/agent_log_<timestamp>.md` (UTC ISO 8601, e.g., `agent_log_2025-11-08T21-45-00Z.md`).
-- Each log entry documents, in order:
-  1. **Step name / command** (what is about to run).
-  2. **Thought brief** (why this step is necessary, key considerations).
-  3. **Result** (outputs, files touched, success/failure, follow-ups).
-- Append entries as you work so reviewers can audit decision flow. Do not retroactively edit old entries except to fix typos; add corrections as new steps.
-- Store only plaintext Markdown; never include secrets. If a step is skipped because of policy or missing data, note that explicitly.
-
-Following this guide keeps the bot stable, secure, and ready for rapid iteration. When in doubt, inspect `docs/module_summary.md` and existing tests to mirror established patterns.
+- Every autonomous session must append a diary under `agent_logs/agent_log_<timestamp>Z.md` (UTC ISO 8601 with colons replaced by hyphens).
+- Each entry should record, in order: **Step** (command/action), **Thought** (why/considerations), **Result** (outcome, files touched/modified, follow-ups). Include code/diff summaries for edits.
+- Append as you work; do not rewrite history except to fix typos. Plaintext only; never include secrets.

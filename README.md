@@ -6,7 +6,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
-- **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 2.5 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
+- **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 3 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
 - **Model-Specific Commands**: Direct access to specific models with `/deepseek`, `/qwen`, `/llama`, and `/gpt` commands
 - **Smart Model Selection**: Automatic filtering to show only media-capable models (Gemini, Llama) when images, videos, or audio are present
 - **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
@@ -142,7 +142,7 @@ Field meanings:
 - `MODEL_SELECTION_TIMEOUT`: Timeout for model selection in seconds (default: 30)
 - `GEMINI_MODEL`: Gemini model to use for general text tasks (default: gemini-pro)
 - `GEMINI_PRO_MODEL`: Gemini Pro model for more complex tasks, including media analysis (default: gemini-2.5-pro-exp-03-25)
-- `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-2.0-flash-exp-image-generation)
+- `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-3-pro-image-preview)
 - `GEMINI_VIDEO_MODEL`: The Gemini model to use for video generation. Defaults to "veo-3.0-generate-preview".
 
 ### Vertex AI Settings (Optional):
@@ -271,7 +271,7 @@ The bot provides flexible AI model selection through an intuitive interface:
 
 ### Interactive Model Selection
 - **Smart Interface**: Use `/q <question>` to get interactive buttons for model selection
-- **4 AI Models**: Choose from Gemini 2.5 ✨, Llama 4, Qwen 3, and DeepSeek 3.1
+- **4 AI Models**: Choose from Gemini 3 ✨, Llama 4, Qwen 3, and DeepSeek 3.1
 - **Media-Aware**: When images, videos, or audio are present, only media-capable models (Gemini, Llama) are shown
 - **User-Specific**: Only the original requester can select the model (prevents button hijacking)
 - **Auto-Timeout**: Selection expires after 30 seconds (configurable) with automatic message cleanup

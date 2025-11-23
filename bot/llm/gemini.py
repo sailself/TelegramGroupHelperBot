@@ -814,31 +814,48 @@ async def generate_image_with_gemini(
     prompt: str,
     input_image_urls: Optional[List[str]] = None,
     upload_to_cwd: bool = True,
+    *,
+    aspect_ratio: Optional[str] = None,
+    resolution: Optional[str] = None,
+    system_prompt: Optional[str] = None,
 ) -> Optional[bytes]:
     """Generate or edit an image using Gemini.
 
     Args:
         prompt: The user's description of the desired image.
-        input_image_urls: Optional list of URLs to images to edit (up to 3).
+        input_image_urls: Optional list of URLs to images to edit (up to 10).
         upload_to_cwd: Whether to upload the generated image to cwd.pw.
+        aspect_ratio: Desired aspect ratio (e.g., "4:3"). Defaults to "4:3".
+        resolution: Desired output resolution ("1K", "2K", "4K"). Defaults to "2K".
+        system_prompt: Optional system instruction for the generation request.
 
     Returns:
         The generated image as bytes, or None if generation failed.
     """
-    logger.info("Generating image with prompt: %s...", prompt[:100])
+    resolved_aspect_ratio = aspect_ratio or "4:3"
+    resolved_resolution = resolution or "2K"
+    logger.info(
+        "Generating image with prompt: %s... (aspect_ratio=%s, resolution=%s)",
+        prompt[:100],
+        resolved_aspect_ratio,
+        resolved_resolution,
+    )
 
     try:
         image_generation_prompt = prompt
         response = None
+        image_config = types.ImageConfig(
+            aspect_ratio=resolved_aspect_ratio, image_size=resolved_resolution
+        )
 
         # If there are input images, include them in the request
         if input_image_urls:
-            if len(input_image_urls) > 3:
+            if len(input_image_urls) > 10:
                 logger.warning(
-                    "Too many images provided (%d), only the first 3 will be used.",
+                    "Too many images provided (%d), only the first 10 will be used.",
                     len(input_image_urls),
                 )
-                input_image_urls = input_image_urls[:3]
+                input_image_urls = input_image_urls[:10]
 
             image_data_list = []
             for url in input_image_urls:
@@ -851,11 +868,20 @@ async def generate_image_with_gemini(
 
             if image_data_list:
                 model = GEMINI_IMAGE_MODEL
+                base_instruction = (
+                    "Edit the images based on the prompt. CRITICAL: response be an image, NOT TEXT."
+                )
+                system_instruction = (
+                    f"{system_prompt}\n\n{base_instruction}"
+                    if system_prompt
+                    else base_instruction
+                )
                 config = types.GenerateContentConfig(
-                    system_instruction="Edit the images based on the prompt. CRITICAL: response be an image, NOT TEXT.",
-                    response_modalities=["IMAGE"],
+                    system_instruction=system_instruction,
+                    response_modalities=["TEXT", "IMAGE"],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings,
+                    image_config=image_config,
                 )
 
                 contents = [f"Edit images based on this prompt: {prompt}"]
@@ -881,11 +907,20 @@ async def generate_image_with_gemini(
             # Prepend a specific instruction to the prompt for text-only image generation
             # and specify the model to generate an image, to avoid the model returns a text-only response.
             image_generation_prompt = prompt
+            base_instruction = (
+                "Generate an image based on the prompt. CRITICAL: response be an image, NOT TEXT."
+            )
+            system_instruction = (
+                f"{system_prompt}\n\n{base_instruction}"
+                if system_prompt
+                else base_instruction
+            )
             config = types.GenerateContentConfig(
-                system_instruction="Generate an image based on the prompt. CRITICAL: response be an image, NOT TEXT.",
-                response_modalities=["IMAGE"],
+                system_instruction=system_instruction,
+                response_modalities=["TEXT", "IMAGE"],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings,
+                image_config=image_config,
             )
 
             logger.info(

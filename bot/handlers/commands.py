@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes
 from bot.config import (
     FACTCHECK_SYSTEM_PROMPT,
     GEMINI_IMAGE_MODEL,
+    GEMINI_MODEL,
     PAINTME_SYSTEM_PROMPT,
     PORTRAIT_SYSTEM_PROMPT,
     PROFILEME_SYSTEM_PROMPT,
@@ -137,9 +138,46 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
 
         if response:
+            summary_text = response if isinstance(response, str) else response.get("final", "")
+            summary_with_model = f"{summary_text}\n\n_Model: {GEMINI_MODEL}_"
             await send_response(
-                processing_message, response, "Message Summary", ParseMode.MARKDOWN
+                processing_message, summary_with_model, "Message Summary", ParseMode.MARKDOWN
             )
+            infographic_prompt = (
+                "Create a clear infographic (no walls of text) summarizing the key points below. "
+                "Use a 16:9 layout with readable labels and visual hierarchy "
+                "suitable for Telegram."
+                f"\n\n{summary_text}"
+            )
+            try:
+                infographic_bytes = await generate_image_with_gemini(
+                    prompt=infographic_prompt,
+                    aspect_ratio="16:9",
+                    resolution="4K",
+                )
+            except Exception as img_error:  # noqa: BLE001
+                logger.error("Error generating TLDR infographic: %s", img_error, exc_info=True)
+                infographic_bytes = None
+
+            if infographic_bytes:
+                try:
+                    image_stream = BytesIO(infographic_bytes)
+                    image_stream.name = "tldr_infographic.jpg"
+                    await processing_message.reply_photo(
+                        photo=image_stream,
+                        caption=f"Infographic (Model: {GEMINI_IMAGE_MODEL})",
+                    )
+                except Exception as send_error:  # noqa: BLE001
+                    logger.error(
+                        "Failed to send TLDR infographic image: %s",
+                        send_error,
+                        exc_info=True,
+                    )
+                    await processing_message.reply_text(
+                        "Generated an infographic but failed to attach it."
+                    )
+            else:
+                logger.warning("TLDR infographic generation returned no image.")
         else:
             await processing_message.edit_text(
                 "Failed to generate a summary. Please try again later."
