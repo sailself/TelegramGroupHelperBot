@@ -14,6 +14,7 @@ from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
 from bot.config import (
+    CWD_PW_API_KEY,
     FACTCHECK_SYSTEM_PROMPT,
     GEMINI_IMAGE_MODEL,
     GEMINI_MODEL,
@@ -41,6 +42,7 @@ from bot.llm import (
     generate_video_with_veo,
     download_media,
 )
+from bot.tools.cwd_uploader import upload_image_bytes_to_cwd
 
 from .access import check_access_control, is_rate_limited
 from .content import (
@@ -140,44 +142,70 @@ async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         if response:
             summary_text = response if isinstance(response, str) else response.get("final", "")
             summary_with_model = f"{summary_text}\n\n_Model: {GEMINI_MODEL}_"
-            await send_response(
-                processing_message, summary_with_model, "Message Summary", ParseMode.MARKDOWN
+            await processing_message.edit_text(
+                "Summary generated. Generating infographic..."
             )
+
             infographic_prompt = (
                 "Create a clear infographic (no walls of text) summarizing the key points below. "
                 "Use a 16:9 layout with readable labels and visual hierarchy "
                 "suitable for Telegram."
                 f"\n\n{summary_text}"
             )
+
+            infographic_url = None
             try:
                 infographic_bytes = await generate_image_with_gemini(
                     prompt=infographic_prompt,
                     aspect_ratio="16:9",
                     resolution="4K",
+                    upload_to_cwd=False,
                 )
+                if infographic_bytes and CWD_PW_API_KEY:
+                    try:
+                        infographic_url = await upload_image_bytes_to_cwd(
+                            image_bytes=infographic_bytes,
+                            api_key=CWD_PW_API_KEY,
+                            mime_type="image/jpeg",
+                            model=GEMINI_IMAGE_MODEL,
+                            prompt=infographic_prompt,
+                        )
+                    except Exception as upload_error:  # noqa: BLE001
+                        logger.error(
+                            "Failed to upload TLDR infographic to cwd.pw: %s",
+                            upload_error,
+                            exc_info=True,
+                        )
+                elif infographic_bytes:
+                    logger.warning(
+                        "TLDR infographic generated but CWD_PW_API_KEY is not configured; cannot embed."
+                    )
+                else:
+                    logger.warning("TLDR infographic generation returned no image.")
             except Exception as img_error:  # noqa: BLE001
                 logger.error("Error generating TLDR infographic: %s", img_error, exc_info=True)
-                infographic_bytes = None
 
-            if infographic_bytes:
-                try:
-                    image_stream = BytesIO(infographic_bytes)
-                    image_stream.name = "tldr_infographic.jpg"
-                    await processing_message.reply_photo(
-                        photo=image_stream,
-                        caption=f"Infographic (Model: {GEMINI_IMAGE_MODEL})",
-                    )
-                except Exception as send_error:  # noqa: BLE001
-                    logger.error(
-                        "Failed to send TLDR infographic image: %s",
-                        send_error,
-                        exc_info=True,
-                    )
-                    await processing_message.reply_text(
-                        "Generated an infographic but failed to attach it."
-                    )
-            else:
-                logger.warning("TLDR infographic generation returned no image.")
+            telegraph_url = None
+            if infographic_url:
+                telegraph_content = (
+                    f"![Infographic]({infographic_url})\n\n{summary_text}\n\n_Model: {GEMINI_MODEL}_"
+                )
+                telegraph_url = await create_telegraph_page(
+                    "Message Summary with Infographic", telegraph_content
+                )
+
+            final_message = summary_with_model
+            if telegraph_url:
+                final_message = f"Chat summary with infographic: [View it here]({telegraph_url})"
+            elif infographic_url:
+                final_message = f"{summary_with_model}\n\nInfographic: {infographic_url}"
+
+            await processing_message.edit_text(
+                "Infographic step completed. Finalizing response..."
+            )
+            await send_response(
+                processing_message, final_message, "Message Summary", ParseMode.MARKDOWN
+            )
         else:
             await processing_message.edit_text(
                 "Failed to generate a summary. Please try again later."
