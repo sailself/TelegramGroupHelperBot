@@ -7,6 +7,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 2.5 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
+- **Chat RAG (Pinecone)**: Ground answers in per-chat Pinecone namespaces with `/betaq <your question>`
 - **Model-Specific Commands**: Direct access to specific models with `/deepseek`, `/qwen`, `/llama`, and `/gpt` commands
 - **Smart Model Selection**: Automatic filtering to show only media-capable models (Gemini, Llama) when images, videos, or audio are present
 - **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
@@ -144,6 +145,14 @@ Field meanings:
 - `GEMINI_PRO_MODEL`: Gemini Pro model for more complex tasks, including media analysis (default: gemini-2.5-pro-exp-03-25)
 - `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-2.0-flash-exp-image-generation)
 - `GEMINI_VIDEO_MODEL`: The Gemini model to use for video generation. Defaults to "veo-3.0-generate-preview".
+- `ENABLE_PINECONE_RAG`: Enable Pinecone RAG ingestion and `/betaq` grounding (default: `false`).
+- `PINECONE_API_KEY`: Pinecone API key (required when RAG is enabled).
+- `PINECONE_INDEX_NAME`: Pinecone index name (default: `tghb-rag`).
+- `PINECONE_CLOUD` / `PINECONE_REGION`: Serverless deployment target (defaults: `aws` / `us-east-1`).
+- `GEMINI_EMBED_MODEL`: Gemini embedding model to use when `RAG_EMBEDDING_PROVIDER=gemini` (default: `gemini-embedding-001`).
+- `RAG_EMBEDDING_PROVIDER`: `gemini` or `local` (uses `LOCAL_EMBEDDING_MODEL`).
+- `LOCAL_EMBEDDING_MODEL`: Local sentence-transformers model name (default: `sentence-transformers/embedding-gemma-002`).
+- `LOCAL_EMBEDDING_HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN`: Token for gated Hugging Face models (needed for embedding-gemma).
 
 ### Vertex AI Settings (Optional):
 - `VERTEX_PROJECT_ID`: Your Google Cloud Project ID (required if using Vertex AI for any feature).
@@ -352,6 +361,12 @@ Use the included `get_chat_id.py` script to easily get user and chat IDs:
 2. Run: `python get_chat_id.py`
 3. Send a message to your bot
 4. The script will display all the ID information you need for the whitelist
+
+### RAG Setup for `/betaq` (Pinecone):
+`/betaq` uses Pinecone namespaces keyed by the chat ID to ground answers.
+1. Export `PINECONE_API_KEY` and set `ENABLE_PINECONE_RAG=true` in your `.env`. Optional tuning: `PINECONE_INDEX_NAME`, `PINECONE_CLOUD`, `PINECONE_REGION`, `RAG_CHAT_TOP_K`, `RAG_EMBEDDING_PROVIDER` (`gemini` or `local`), `LOCAL_EMBEDDING_MODEL` (defaults to `BAAI/bge-m3`).
+2. Run the importer to seed history: `poetry run python bot/tools/rag_import.py --chat-id <chat_id> --file path/to/history.json`.
+3. Start the bot; the background vectorizer ingests new messages periodically (`RAG_POLL_INTERVAL_SECONDS`), keeping the Pinecone namespace fresh.
 
 ## Image Hosting Integration
 

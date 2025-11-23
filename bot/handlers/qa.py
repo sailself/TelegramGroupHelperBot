@@ -6,7 +6,7 @@ import logging
 import time
 from datetime import datetime
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import langid
 from pycountry import languages
@@ -19,6 +19,7 @@ from bot.config import (
     DEFAULT_Q_MODEL,
     DEEPSEEK_MODEL,
     ENABLE_OPENROUTER,
+    ENABLE_PINECONE_RAG,
     get_openrouter_model_config,
     GPT_MODEL,
     GROK_MODEL,
@@ -31,7 +32,12 @@ from bot.config import (
     TELEGRAPH_AUTHOR_NAME,
 )
 from bot.db.database import queue_message_insert
-from bot.llm import call_gemini, call_openrouter, download_media
+from bot.llm import (
+    call_gemini,
+    call_openrouter,
+    download_media,
+    retrieve_formatted_context,
+)
 
 from .access import check_access_control, is_rate_limited
 from .content import (
@@ -1271,6 +1277,39 @@ async def stop_periodic_cleanup():
         except asyncio.CancelledError:
             pass
         logger.info("Stopped periodic cleanup task")
+
+
+async def betaq_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle the /betaq command with Pinecone RAG context."""
+    if update.effective_chat is None or update.effective_message is None:
+        return
+
+    if not ENABLE_PINECONE_RAG:
+        await update.effective_message.reply_text(
+            "Pinecone RAG is not configured. Set ENABLE_PINECONE_RAG=true, "
+            "PINECONE_API_KEY, and index settings to enable it."
+        )
+        return
+
+    chat_id = update.effective_chat.id
+
+    async def _call_gemini_with_rag(**kwargs):
+        query_text = kwargs.get("user_content") or ""
+        context_block = await retrieve_formatted_context(chat_id, query_text)
+        if context_block:
+            kwargs["user_content"] = (
+                "Use the following chat history snippets as context. "
+                "Cite message_id when referencing them.\n\n"
+                f"{context_block}\n\nQuestion: {query_text}"
+            )
+        return await call_gemini(**kwargs)
+
+    await q_handler(
+        update,
+        context,
+        call_model=_call_gemini_with_rag,
+        model_name="Gemini RAG",
+    )
 
 
 async def deepseek_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

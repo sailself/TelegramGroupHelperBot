@@ -38,6 +38,8 @@ htmlcov/
 *.log
 logs/
 
+# Agent logs
+agent_logs/
 # Virtual environment
 venv/
 .venv/

@@ -49,6 +49,12 @@ from .openrouter import (
     parse_gpt_content,
     parse_qwen_content,
 )
+from .rag import (
+    retrieve_formatted_context,
+    run_vectorizer_once,
+    start_background_vectorizer,
+    upsert_raw_records,
+)
 
 __all__ = [
     'CWD_PW_API_KEY',
@@ -94,6 +100,10 @@ __all__ = [
     'get_vertex_client',
     'parse_gpt_content',
     'parse_qwen_content',
+    'retrieve_formatted_context',
+    'run_vectorizer_once',
+    'start_background_vectorizer',
+    'upsert_raw_records',
     'stream_gemini',
     'test_gemini_vision',
 ]

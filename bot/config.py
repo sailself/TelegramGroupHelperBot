@@ -71,6 +71,7 @@ GEMINI_TEMPERATURE = float(os.getenv("GEMINI_TEMPERATURE", "0.7"))
 GEMINI_TOP_K = int(os.getenv("GEMINI_TOP_K", "40"))
 GEMINI_TOP_P = float(os.getenv("GEMINI_TOP_P", "0.95"))
 GEMINI_MAX_OUTPUT_TOKENS = int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "2048"))
+GEMINI_EMBED_MODEL = os.getenv("GEMINI_EMBED_MODEL", "gemini-embedding-001")
 
 VERTEX_PROJECT_ID=os.getenv("VERTEX_PROJECT_ID")
 VERTEX_LOCATION=os.getenv("VERTEX_LOCATION")
@@ -78,6 +79,23 @@ USE_VERTEX_VIDEO=os.getenv("USE_VERTEX_VIDEO", "false").lower() == "true"
 VERTEX_VIDEO_MODEL=os.getenv("VERTEX_VIDEO_MODEL")
 USE_VERTEX_IMAGE=os.getenv("USE_VERTEX_IMAGE", "false").lower() == "true"
 VERTEX_IMAGE_MODEL=os.getenv("VERTEX_IMAGE_MODEL")
+
+# Pinecone RAG settings
+ENABLE_PINECONE_RAG = os.getenv("ENABLE_PINECONE_RAG", "false").lower() == "true"
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "tghb-rag")
+PINECONE_CLOUD = os.getenv("PINECONE_CLOUD", "aws")
+PINECONE_REGION = os.getenv("PINECONE_REGION", "us-east-1")
+RAG_CHAT_TOP_K = int(os.getenv("RAG_CHAT_TOP_K", "6"))
+RAG_POLL_INTERVAL_SECONDS = int(os.getenv("RAG_POLL_INTERVAL_SECONDS", "300"))
+RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "gemini")
+LOCAL_EMBEDDING_MODEL = os.getenv(
+    "LOCAL_EMBEDDING_MODEL", "sentence-transformers/embedding-gemma-002"
+)
+LOCAL_EMBEDDING_HF_TOKEN = os.getenv("LOCAL_EMBEDDING_HF_TOKEN") or os.getenv(
+    "HUGGINGFACE_HUB_TOKEN"
+)
+LOCAL_EMBEDDING_DEVICE = os.getenv("LOCAL_EMBEDDING_DEVICE", "cuda")
 
 # OpenRouter settings
 ENABLE_OPENROUTER = os.getenv("ENABLE_OPENROUTER", "true").lower() == "true"

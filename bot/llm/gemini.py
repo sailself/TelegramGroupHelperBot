@@ -6,7 +6,7 @@ import base64
 import logging
 import re
 from io import BytesIO
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from google.genai import types
 from PIL import Image
@@ -61,6 +61,7 @@ async def call_gemini(
     youtube_urls: Optional[List[str]] = None,
     audio_data: Optional[bytes] = None,
     audio_mime_type: Optional[str] = None,
+    file_search_options: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Call the Gemini API with the given prompts.
 
@@ -78,6 +79,8 @@ async def call_gemini(
         youtube_urls: Optional list of YouTube video URLs to provide as context.
         audio_data: Optional audio data as bytes.
         audio_mime_type: Optional MIME type for the audio data.
+        file_search_options: Optional File Search tool configuration (for example a
+            list of `file_search_store_names` and metadata filters).
 
     Returns:
         The model's response.
@@ -105,6 +108,7 @@ async def call_gemini(
                 use_url_context=use_url_context,
                 response_language=response_language,
                 use_pro_model=use_pro_model,
+                file_search_options=file_search_options,
             )
         elif audio_data and audio_mime_type:
             logger.info(
@@ -119,6 +123,7 @@ async def call_gemini(
                 use_url_context=use_url_context,
                 response_language=response_language,
                 use_pro_model=use_pro_model,
+                file_search_options=file_search_options,
             )
         elif image_data_list:
             logger.info("Processing with %d provided image(s).", len(image_data_list))
@@ -130,6 +135,7 @@ async def call_gemini(
                 use_url_context=use_url_context,
                 response_language=response_language,
                 use_pro_model=use_pro_model,
+                file_search_options=file_search_options,
             )
         elif image_url:
             logger.info("Processing with single image URL: %s", image_url)
@@ -149,6 +155,7 @@ async def call_gemini(
                     use_url_context=use_url_context,
                     response_language=response_language,
                     use_pro_model=use_pro_model,
+                    file_search_options=file_search_options,
                 )
         elif youtube_urls and len(youtube_urls) > 0:
             logger.info("Processing with %d YouTube video(s).", len(youtube_urls))
@@ -160,6 +167,7 @@ async def call_gemini(
                 use_url_context=use_url_context,
                 response_language=response_language,
                 use_pro_model=use_pro_model,
+                file_search_options=file_search_options,
             )
 
         # If no media (video, image_data_list, or downloadable image_url), proceed with text-only call
@@ -181,6 +189,12 @@ async def call_gemini(
         if use_url_context:
             tools.append({"url_context": {}})
             logger.info("Using URL Context for this request")
+        if file_search_options:
+            tools.append({"file_search": dict(file_search_options)})
+            logger.info(
+                "Using File Search with store(s): %s",
+                file_search_options.get("file_search_store_names"),
+            )
         if tools:
             config["tools"] = tools
         if system_prompt:
@@ -219,6 +233,7 @@ async def call_gemini(
                 use_search_grounding=False,
                 use_url_context=use_url_context,
                 use_pro_model=use_pro_model,  # Retain pro_model choice and Ensure no media in fallback
+                file_search_options=file_search_options,
             )
         elif use_search_grounding and (video_data or image_data_list or image_url):
             logger.warning(
@@ -242,6 +257,7 @@ async def call_gemini_with_media(
     youtube_urls: Optional[List[str]] = None,
     audio_data: Optional[bytes] = None,
     audio_mime_type: Optional[str] = None,
+    file_search_options: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Call the Gemini with media and text, including image(s), video or audio.
 
@@ -258,6 +274,8 @@ async def call_gemini_with_media(
         youtube_urls: Optional list of YouTube video URLs to provide as context.
         audio_data: Optional audio data as bytes.
         audio_mime_type: Optional MIME type for the audio data.
+        file_search_options: Optional File Search tool configuration (for example a
+            list of `file_search_store_names` and metadata filters).
     Returns:
         The model's response.
     """
@@ -283,6 +301,12 @@ async def call_gemini_with_media(
         if use_url_context:
             tools.append({"url_context": {}})
             logger.info("Using URL Context for this request")
+        if file_search_options:
+            tools.append({"file_search": dict(file_search_options)})
+            logger.info(
+                "Using File Search with store(s): %s",
+                file_search_options.get("file_search_store_names"),
+            )
         if tools:
             config["tools"] = tools
         if system_prompt:

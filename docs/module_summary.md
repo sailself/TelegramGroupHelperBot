@@ -127,6 +127,7 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 - `cleanup_expired_requests(bot)`: Removes pending requests that exceeded `MODEL_SELECTION_TIMEOUT`.
 - `handle_model_timeout(request_key, bot)`: Notifies the chat when a requester never chose a model.
 - `periodic_cleanup_task(bot)`, `start_periodic_cleanup(bot)`, `stop_periodic_cleanup()`: Maintain the background cleanup loop.
+- `betaq_handler(update, context)`: Uses Pinecone RAG for the chat namespace (chat_id) and piggybacks on `q_handler`.
 - Shortcut handlers `deepseek_handler`, `qwen_handler`, `llama_handler`, `gpt_handler` simply call `_build_openrouter_command` and then invoke `q_handler`.
 
 ## `bot.llm` Package
@@ -151,6 +152,13 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 - `generate_image_with_gemini(prompt, image_urls, prompt_hint, upload_to_cwd)`: Orchestrates image generation/editing plus optional upload to CWD.PW.
 - `generate_video_with_veo(system_prompt, user_prompt, image_data)`: Wraps the Veo/Gemini video generation flow, including polling for completion and downloading the final file bytes.
 - `generate_image_with_vertex(prompt, image_urls, model_hint)`: Uses Vertex AI as an alternative to Gemini for `/img`.
+
+### `bot/llm/rag.py`
+- Pinecone-backed RAG utilities. Supports Gemini embeddings or a local `sentence-transformers` model (default: `BAAI/bge-m3`).
+- `upsert_messages_to_pinecone(messages, chat_id)`: Embeds and writes messages to the chat namespace.
+- `retrieve_formatted_context(chat_id, question)`: Fetches top-k similar messages and returns a formatted snippet block.
+- `run_vectorizer_once()` / `start_background_vectorizer()`: Periodically sync recent DB messages into Pinecone when `ENABLE_PINECONE_RAG` is true.
+- `upsert_raw_records(chat_id, records)`: Helper for CLI imports of external history.
 
 ### `bot/llm/openrouter.py`
 - Glue for OpenRouter chat completions plus result parsing.
@@ -202,6 +210,12 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 - Private helpers handle URL normalization (`_normalize_status_url`), host validation, query stripping, stop-word filtering, and deduplication.
 - `extract_twitter_content(url)`: Main coroutine that fetches Markdown from r.jina.ai, extracts metadata (author, timestamp), collects referenced media URLs, and returns a formatted snippet ready for Gemini.
 
+### `bot/tools/file_search_cli.py`
+- Legacy helper to create/reuse a Gemini File Search store (chat ID as name) and upload every file in a folder; kept for backwards compatibility if the Gemini File Search API is restored.
+
+### `bot/tools/rag_import.py`
+- Imports a JSON chat history file (id/user_id/username/datetime/text/reply_to_message_id) into the Pinecone namespace for a chat so `/betaq` has context before the live vectorizer runs.
+
 ## Tests
 
 ### `tests/__init__.py`, `tests/unit/__init__.py`, `tests/integration/__init__.py`
@@ -247,4 +261,3 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 
 ### `migrations/versions/add_unique_constraint.py`
 - Follow-up revision that recreates the `messages` table on SQLite to enforce the unique constraint retroactively while deduplicating rows.
-

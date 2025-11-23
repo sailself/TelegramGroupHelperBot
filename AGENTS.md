@@ -99,6 +99,7 @@ Authoritative checklist for contributors working inside `TelegramGroupHelperBot`
   1. **Step name / command** (what is about to run).
   2. **Thought brief** (why this step is necessary, key considerations).
   3. **Result** (outputs, files touched, success/failure, follow-ups).
+  4. **Detail** (list of code changes with file name and line number).
 - Append entries as you work so reviewers can audit decision flow. Do not retroactively edit old entries except to fix typos; add corrections as new steps.
 - Store only plaintext Markdown; never include secrets. If a step is skipped because of policy or missing data, note that explicitly.
 

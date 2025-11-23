@@ -20,6 +20,7 @@ from bot.config import (
 )
 from bot.db.database import init_db
 from bot.handlers import (
+    betaq_handler,
     deepseek_handler,
     factcheck_handler,
     gpt_handler,
@@ -40,6 +41,7 @@ from bot.handlers import (
     vid_handler,
 )
 from bot.utils.http import close_http_session
+from bot.llm import start_background_vectorizer
 
 # Configure logging
 logging.basicConfig(
@@ -64,6 +66,7 @@ async def init_db_wrapper():
 async def post_init(application):
     """Post-initialization tasks."""
     logger.info("Post-initialization completed")
+    await start_background_vectorizer()
 
 
 def main():
@@ -83,6 +86,7 @@ def main():
     application.add_handler(CommandHandler("tldr", tldr_handler))
     application.add_handler(CommandHandler("factcheck", factcheck_handler))
     application.add_handler(CommandHandler("q", q_handler))
+    application.add_handler(CommandHandler("betaq", betaq_handler))
     application.add_handler(CommandHandler("deepseek", deepseek_handler))
     application.add_handler(CommandHandler("qwen", qwen_handler))
     application.add_handler(CommandHandler("llama", llama_handler))

@@ -1017,6 +1017,7 @@ async def start_handler(
         "• /tldr [number] - Summarize recent messages (default: 10)\n"
         "• /factcheck - Reply to a message or image to fact-check it\n"
         "• /q [question] - Ask me any question or analyze images\n"
+        "• /betaq [question] - Ask using RAG over chat history (Pinecone)\n"
         "• /img [description] - Generate or edit an image using Gemini\n"
         "• /vid [prompt] - Generate a video based on text and/or a replied-to image.\n"
         "• /profileme - Generate your user profile based on your chat history.\n"
@@ -1310,6 +1311,10 @@ async def help_handler(
 
     /q - Ask a question
     Usage: `/q [your question]`
+
+    /betaq - Ask a question grounded in this chat’s Pinecone RAG index
+    Usage: `/betaq [your question]`
+    (Requires Pinecone index configured with recent messages.)
 
     /img - Generate or edit an image using Gemini
     Usage: `/img [description]` for generating a new image
