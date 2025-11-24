@@ -45,7 +45,8 @@ async def send_response(
         telegraph_url = await create_telegraph_page(title, response)
         if telegraph_url:
             await message.edit_text(
-                f"I have too much to say. [View it here]({telegraph_url})"
+                f"I have too much to say. [View it here]({telegraph_url})", 
+                parse_mode=ParseMode.MARKDOWN
             )
         else:
             # Fallback: try to send as plain text
@@ -71,7 +72,8 @@ async def send_response(
                     telegraph_url = await create_telegraph_page(title, response)
                     if telegraph_url:
                         await message.edit_text(
-                            f"The response is too long. [View it here]({telegraph_url})"
+                            f"The response is too long. [View it here]({telegraph_url})", 
+                            parse_mode=ParseMode.MARKDOWN
                         )
                     else:
                         # Last resort: truncate
