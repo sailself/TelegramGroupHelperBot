@@ -1098,23 +1098,6 @@ def get_model_function_and_name(model_key: str) -> tuple:
     return call_gemini, None
 
 
-def _build_openrouter_command(alias: str, fallback: str) -> tuple | None:
-    """Return a callable and model identifier for legacy command handlers."""
-    candidate = resolve_alias_to_model_id(alias) or fallback.strip()
-    if not candidate or candidate == MODEL_GEMINI:
-        return None
-    config = get_openrouter_model_config(candidate)
-    supports_tools = config.tools if config else True
-    return (
-        partial(
-            call_openrouter,
-            model_name=candidate,
-            supports_tools=supports_tools,
-        ),
-        candidate,
-    )
-
-
 async def cleanup_expired_requests(bot=None):
     """Clean up expired pending Q requests (older than MODEL_SELECTION_TIMEOUT seconds) and delete messages."""
     current_time = time.time()
@@ -1283,63 +1266,3 @@ async def stop_periodic_cleanup():
         except asyncio.CancelledError:
             pass
         logger.info("Stopped periodic cleanup task")
-
-
-async def deepseek_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /deepseek command."""
-    result = _build_openrouter_command("deepseek", DEEPSEEK_MODEL)
-    if result is None:
-        await update.effective_message.reply_text("DeepSeek model is not configured.")
-        return
-    call_model, model_identifier = result
-    await q_handler(
-        update,
-        context,
-        call_model=call_model,
-        model_name=model_identifier,
-    )
-
-
-async def qwen_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /qwen command."""
-    result = _build_openrouter_command("qwen", QWEN_MODEL)
-    if result is None:
-        await update.effective_message.reply_text("Qwen model is not configured.")
-        return
-    call_model, model_identifier = result
-    await q_handler(
-        update,
-        context,
-        call_model=call_model,
-        model_name=model_identifier,
-    )
-
-
-async def llama_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /llama command."""
-    result = _build_openrouter_command("llama", LLAMA_MODEL)
-    if result is None:
-        await update.effective_message.reply_text("Llama model is not configured.")
-        return
-    call_model, model_identifier = result
-    await q_handler(
-        update,
-        context,
-        call_model=call_model,
-        model_name=model_identifier,
-    )
-
-
-async def gpt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle the /gpt command."""
-    result = _build_openrouter_command("gpt", GPT_MODEL)
-    if result is None:
-        await update.effective_message.reply_text("GPT model is not configured.")
-        return
-    call_model, model_identifier = result
-    await q_handler(
-        update,
-        context,
-        call_model=call_model,
-        model_name=model_identifier,
-    )

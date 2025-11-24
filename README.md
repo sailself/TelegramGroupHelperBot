@@ -7,7 +7,6 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 3 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
-- **Model-Specific Commands**: Direct access to specific models with `/deepseek`, `/qwen`, `/llama`, and `/gpt` commands
 - **Smart Model Selection**: Automatic filtering to show only media-capable models (Gemini, Llama) when images, videos, or audio are present
 - **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
 - **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
@@ -277,10 +276,6 @@ The bot provides flexible AI model selection through an intuitive interface:
 - **Auto-Timeout**: Selection expires after 30 seconds (configurable) with automatic message cleanup
 
 ### Direct Model Access
-- **`/deepseek <question>`**: Use DeepSeek model directly
-- **`/qwen <question>`**: Use Qwen model directly  
-- **`/llama <question>`**: Use Llama model directly
-- **`/gpt <question>`**: Use GPT model directly
 
 ### OpenRouter Fallback
 - **Flexible Configuration**: Can be disabled via `ENABLE_OPENROUTER=false`

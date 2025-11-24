@@ -20,20 +20,16 @@ from bot.config import (
 )
 from bot.db.database import init_db
 from bot.handlers import (
-    deepseek_handler,
     factcheck_handler,
-    gpt_handler,
     handle_media_group,
     help_handler,
     img_handler,
-    llama_handler,
     load_whitelist,
     log_message,
     model_selection_callback,
     paintme_handler,
     profileme_handler,
     q_handler,
-    qwen_handler,
     start_handler,
     support_handler,
     tldr_handler,
@@ -83,10 +79,6 @@ def main():
     application.add_handler(CommandHandler("tldr", tldr_handler))
     application.add_handler(CommandHandler("factcheck", factcheck_handler))
     application.add_handler(CommandHandler("q", q_handler))
-    application.add_handler(CommandHandler("deepseek", deepseek_handler))
-    application.add_handler(CommandHandler("qwen", qwen_handler))
-    application.add_handler(CommandHandler("llama", llama_handler))
-    application.add_handler(CommandHandler("gpt", gpt_handler))
     application.add_handler(CommandHandler("img", img_handler))
     application.add_handler(CommandHandler("vid", vid_handler))
     application.add_handler(CommandHandler("profileme", profileme_handler))
