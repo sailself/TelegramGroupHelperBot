@@ -34,6 +34,11 @@ from bot.config import (
 )
 from bot.db.database import queue_message_insert
 from bot.llm import call_gemini, call_openrouter, download_media
+from bot.utils.timing import (
+    CommandTimer,
+    complete_command_timer,
+    start_command_timer,
+)
 
 from .access import check_access_control, is_rate_limited
 from .content import (
@@ -190,7 +195,8 @@ async def process_q_request_with_gemini(
     video_mime_type: Optional[str],
     audio_data: Optional[bytes],
     audio_mime_type: Optional[str],
-    youtube_urls: Optional[List[str]]
+    youtube_urls: Optional[List[str]],
+    command_timer: Optional[CommandTimer] = None,
 ) -> None:
     """Process Q request directly with Gemini (original behavior when OpenRouter is disabled)."""
     try:
@@ -278,9 +284,11 @@ async def process_q_request_with_gemini(
             await processing_message.edit_text(
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
             )
+        complete_command_timer(command_timer, status="success")
 
     except Exception as e:
         logger.error("Error in process_q_request_with_gemini: %s", e, exc_info=True)
+        complete_command_timer(command_timer, status="error", detail=str(e))
         try:
             await processing_message.edit_text(f"Error processing your question: {str(e)}")
         except Exception:
@@ -299,7 +307,8 @@ async def process_q_request_with_specific_model(
     audio_mime_type: Optional[str],
     youtube_urls: Optional[List[str]],
     call_model,
-    model_name: Optional[str]
+    model_name: Optional[str],
+    command_timer: Optional[CommandTimer] = None,
 ) -> None:
     """Process Q request with a specific model."""
     try:
@@ -414,9 +423,11 @@ async def process_q_request_with_specific_model(
             await processing_message.edit_text(
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
             )
+        complete_command_timer(command_timer, status="success")
 
     except Exception as e:
         logger.error("Error in process_q_request_with_specific_model: %s", e, exc_info=True)
+        complete_command_timer(command_timer, status="error", detail=str(e))
         try:
             await processing_message.edit_text(f"Error processing your question: {str(e)}")
         except Exception:
@@ -439,14 +450,22 @@ async def q_handler(
     if update.effective_message is None or update.effective_chat is None:
         return
 
+    command_timer: Optional[CommandTimer] = None
+    try:
+        command_timer = start_command_timer("q", update)
+    except Exception as log_exc:  # noqa: BLE001
+        logger.warning("Failed to start command timer for /q: %s", log_exc)
+
     # Check access control
     if not await check_access_control(update, "q"):
+        complete_command_timer(command_timer, status="blocked", detail="access_control")
         return
 
     if is_rate_limited(update.effective_message.from_user.id):
         await update.effective_message.reply_text(
             "Rate limit exceeded. Please try again later."
         )
+        complete_command_timer(command_timer, status="rate_limited")
         return
 
     try:
@@ -746,14 +765,16 @@ async def q_handler(
                     update, processing_message, query, original_query, 
                     image_data_list, video_data, video_mime_type,
                     audio_data, audio_mime_type, youtube_urls,
-                    call_model, model_name
+                    call_model, model_name,
+                    command_timer=command_timer,
                 )
             else:
                 # OpenRouter not available, use Gemini
                 await process_q_request_with_gemini(
                     update, processing_message, query, original_query, 
                     image_data_list, video_data, video_mime_type,
-                    audio_data, audio_mime_type, youtube_urls
+                    audio_data, audio_mime_type, youtube_urls,
+                    command_timer=command_timer,
                 )
             return
         
@@ -779,6 +800,7 @@ async def q_handler(
                 audio_data,
                 audio_mime_type,
                 youtube_urls,
+                command_timer=command_timer,
             )
             return
 
@@ -864,7 +886,8 @@ async def q_handler(
             "message_id": update.effective_message.message_id,
             "selection_message_id": selection_message.message_id,
             "original_user_id": update.effective_message.from_user.id,  # Store original user for validation
-            "timestamp": time.time()  # For timeout handling
+            "timestamp": time.time(),  # For timeout handling
+            "command_timer": command_timer,
         }
 
         # Schedule default model processing if no selection is made
@@ -887,12 +910,24 @@ async def q_handler(
         )
     except Exception as e:  # noqa: BLE001
         logger.error("Error in q_handler: %s", e, exc_info=True)
+        complete_command_timer(command_timer, status="error", detail=str(e))
         try:
             await update.effective_message.reply_text(
                 f"Error processing your question: {str(e)}"
             )
         except Exception:  # noqa: BLE001 # Inner exception during error reporting
             pass
+    else:
+        # If we reach here without scheduling further processing, mark as completed.
+        # For selection flows, completion is handled later.
+        if (
+            command_timer
+            and all(
+                request.get("command_timer") is not command_timer
+                for request in pending_q_requests.values()
+            )
+        ):
+            complete_command_timer(command_timer, status="success")
 
 
 async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -944,11 +979,17 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
     if time.time() - request_data["timestamp"] > MODEL_SELECTION_TIMEOUT:
         # Remove expired request
         del pending_q_requests[request_key]
+        complete_command_timer(
+            request_data.get("command_timer"),
+            status="expired",
+            detail="selection_timeout",
+        )
         await query.edit_message_text("Too slow! This request has turned into a pumpkin. Please try again before midnight 🎃.")
         return
     
-    # Remove the request from pending list
+    # Remove the request from pending list and capture timer
     del pending_q_requests[request_key]
+    command_timer = request_data.get("command_timer")
     
     try:
         # Update the selection message to show processing
@@ -1043,13 +1084,16 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
                 "Answer to Your Question",
                 ParseMode.MARKDOWN,
             )
+            complete_command_timer(command_timer, status="success")
         else:
             await query.edit_message_text(
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else."
             )
+            complete_command_timer(command_timer, status="success", detail="no_answer")
             
     except Exception as e:
         logger.error("Error in model_selection_callback: %s", e, exc_info=True)
+        complete_command_timer(command_timer, status="error", detail=str(e))
         try:
             await query.edit_message_text(f"Error processing your question: {str(e)}")
         except Exception:
@@ -1122,6 +1166,7 @@ async def cleanup_expired_requests(bot=None):
         # Remove from pending requests
         del pending_q_requests[key]
         logger.info("Cleaned up expired Q request: %s", key)
+        complete_command_timer(request_data.get("command_timer"), status="expired")
     
     return len(expired_keys)
 
@@ -1224,8 +1269,10 @@ async def handle_model_timeout(request_key: str, bot) -> None:
                     "asking something else."
                 ),
             )
+        complete_command_timer(request_data.get("command_timer"), status="success", detail="timeout_default_model")
     except Exception as e:  # noqa: BLE001
         logger.error("Error processing default model for /q: %s", e, exc_info=True)
+        complete_command_timer(request_data.get("command_timer"), status="error", detail=str(e))
         try:
             await bot.edit_message_text(
                 chat_id=request_data["chat_id"],

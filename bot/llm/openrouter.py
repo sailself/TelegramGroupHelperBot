@@ -18,6 +18,7 @@ from bot.config import (
     OPENROUTER_TOP_P,
     QWEN_MODEL,
 )
+from bot.utils.timing import log_llm_timing
 from .clients import get_openrouter_client
 from .exa_search import exa_search_tool, ExaSearchError
 
@@ -266,14 +267,24 @@ async def _chat_completion_with_tools(
     seen_calls: set[str] = set()
 
     while True:
-        completion = await client.chat.completions.create(
-            model=model_name,
-            messages=messages,
-            temperature=OPENROUTER_TEMPERATURE,
-            top_p=OPENROUTER_TOP_P,
-            extra_body={"top_k": OPENROUTER_TOP_K},
-            tools=active_tools if active_tools else None,
-            tool_choice="auto" if active_tools else None,
+        completion = await log_llm_timing(
+            "openrouter",
+            model_name,
+            "chat.completions.create",
+            lambda: client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=OPENROUTER_TEMPERATURE,
+                top_p=OPENROUTER_TOP_P,
+                extra_body={"top_k": OPENROUTER_TOP_K},
+                tools=active_tools if active_tools else None,
+                tool_choice="auto" if active_tools else None,
+            ),
+            metadata={
+                "tool_iteration": tool_iterations + 1,
+                "tools_enabled": bool(active_tools),
+                "message_count": len(messages),
+            },
         )
         choice = completion.choices[0]
         message = choice.message

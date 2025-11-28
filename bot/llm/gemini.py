@@ -25,6 +25,7 @@ from bot.config import (
     VERTEX_IMAGE_MODEL,
     VERTEX_VIDEO_MODEL,
 )
+from bot.utils.timing import log_llm_timing
 from .clients import get_gemini_client, get_vertex_client
 from .media import detect_mime_type, download_media
 
@@ -193,8 +194,20 @@ async def call_gemini(
         else:
             logger.info("Using Standard model for Gemini")
         # Make the API call
-        response = await get_gemini_client().aio.models.generate_content(
-            model=model, contents=user_content, config=config
+        response = await log_llm_timing(
+            "gemini",
+            model,
+            "generate_content",
+            lambda: get_gemini_client().aio.models.generate_content(
+                model=model, contents=user_content, config=config
+            ),
+            metadata={
+                "search_grounding": use_search_grounding,
+                "url_context": use_url_context,
+                "response_language": response_language,
+                "has_media": False,
+                "youtube_urls": len(youtube_urls or []),
+            },
         )
 
         # Log the response details
@@ -335,8 +348,22 @@ async def call_gemini_with_media(
         )
 
         # Make the API call with text and media using the client.models method
-        response = await get_gemini_client().aio.models.generate_content(
-            model=model_to_use, contents=contents, config=config
+        response = await log_llm_timing(
+            "gemini",
+            model_to_use,
+            "generate_content",
+            lambda: get_gemini_client().aio.models.generate_content(
+                model=model_to_use, contents=contents, config=config
+            ),
+            metadata={
+                "search_grounding": use_search_grounding,
+                "url_context": use_url_context,
+                "response_language": response_language,
+                "has_images": bool(image_data_list),
+                "has_video": video_data is not None,
+                "has_audio": audio_data is not None,
+                "youtube_urls": len(youtube_urls or []),
+            },
         )
 
         # Log the response details for debugging
@@ -711,10 +738,19 @@ async def stream_gemini(
             logger.info("Stream - Sending message to model: %s", model)
 
             # For streaming, we need to handle the generate_content_stream method
-            stream_response = (
-                await get_gemini_client().aio.models.generate_content_stream(
+            stream_response = await log_llm_timing(
+                "gemini",
+                model,
+                "generate_content_stream",
+                lambda: get_gemini_client().aio.models.generate_content_stream(
                     model=model, contents=user_content, config=config
-                )
+                ),
+                metadata={
+                    "search_grounding": use_search_grounding,
+                    "url_context": use_url_context,
+                    "response_language": response_language,
+                    "stream": True,
+                },
             )
 
             # Process the streaming response
@@ -891,8 +927,18 @@ async def generate_image_with_gemini(
                         types.Part.from_bytes(data=image_data, mime_type=mime_type)
                     )
 
-                response = await get_gemini_client().aio.models.generate_content(
-                    model=model, contents=contents, config=config
+                response = await log_llm_timing(
+                    "gemini",
+                    model,
+                    "generate_content",
+                    lambda: get_gemini_client().aio.models.generate_content(
+                        model=model, contents=contents, config=config
+                    ),
+                    metadata={
+                        "mode": "image_edit",
+                        "input_images": len(image_data_list),
+                        "upload_to_cwd": upload_to_cwd,
+                    },
                 )
             else:
                 # All image downloads failed, proceed with text-only
@@ -929,8 +975,17 @@ async def generate_image_with_gemini(
                 image_generation_prompt,
             )
 
-            response = await get_gemini_client().aio.models.generate_content(
-                model=model, contents=image_generation_prompt, config=config
+            response = await log_llm_timing(
+                "gemini",
+                model,
+                "generate_content",
+                lambda: get_gemini_client().aio.models.generate_content(
+                    model=model, contents=image_generation_prompt, config=config
+                ),
+                metadata={
+                    "mode": "image_generate_text_prompt",
+                    "upload_to_cwd": upload_to_cwd,
+                },
             )
 
         # Extract the image data from the response parts
@@ -1105,13 +1160,24 @@ async def generate_video_with_veo(
                 "Calling client.models.generate_videos with model '%s'",
                 GEMINI_VIDEO_MODEL if not USE_VERTEX_VIDEO else VERTEX_VIDEO_MODEL,
             )
-            operation = await async_client.aio.models.generate_videos(
-                model=(
-                    GEMINI_VIDEO_MODEL if not USE_VERTEX_VIDEO else VERTEX_VIDEO_MODEL
+            operation = await log_llm_timing(
+                "vertex" if USE_VERTEX_VIDEO else "gemini",
+                GEMINI_VIDEO_MODEL if not USE_VERTEX_VIDEO else VERTEX_VIDEO_MODEL,
+                "generate_videos",
+                lambda: async_client.aio.models.generate_videos(
+                    model=(
+                        GEMINI_VIDEO_MODEL
+                        if not USE_VERTEX_VIDEO
+                        else VERTEX_VIDEO_MODEL
+                    ),
+                    prompt=combined_prompt,
+                    image=image_obj,
+                    config=video_config,
                 ),
-                prompt=combined_prompt,
-                image=image_obj,
-                config=video_config,
+                metadata={
+                    "has_image": image_obj is not None,
+                    "prompt_length": len(combined_prompt),
+                },
             )
             logger.info("Initial operation received, Done: %s", operation.done)
 
@@ -1238,16 +1304,25 @@ async def generate_image_with_vertex(
             number_of_images,
         )
 
-        response = await vertex_client.aio.models.generate_images(
-            model=VERTEX_IMAGE_MODEL,
-            prompt=prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=number_of_images,
-                enhance_prompt=True,
-                safety_filter_level="BLOCK_ONLY_HIGH",
-                person_generation="ALLOW_ADULT",
-                include_rai_reason=True,
+        response = await log_llm_timing(
+            "vertex",
+            VERTEX_IMAGE_MODEL,
+            "generate_images",
+            lambda: vertex_client.aio.models.generate_images(
+                model=VERTEX_IMAGE_MODEL,
+                prompt=prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=number_of_images,
+                    enhance_prompt=True,
+                    safety_filter_level="BLOCK_ONLY_HIGH",
+                    person_generation="ALLOW_ADULT",
+                    include_rai_reason=True,
+                ),
             ),
+            metadata={
+                "upload_to_cwd": upload_to_cwd,
+                "number_of_images": number_of_images,
+            },
         )
 
         if response and response.generated_images:

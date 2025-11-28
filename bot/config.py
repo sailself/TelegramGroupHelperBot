@@ -50,6 +50,29 @@ console_handler.setLevel(logging.INFO)
 root_logger.addHandler(file_handler)
 root_logger.addHandler(console_handler)
 
+# Timing logger for performance analysis (daily rolling)
+timing_log_path = logs_dir / "timing.log"
+timing_handler = TimedRotatingFileHandler(
+    filename=timing_log_path,
+    when="midnight",
+    interval=1,
+    backupCount=30,
+    encoding="utf-8",
+)
+timing_handler.setFormatter(
+    logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+)
+TIMING_LOGGER = logging.getLogger("bot.timing")
+TIMING_LOGGER.setLevel(logging.INFO)
+TIMING_LOGGER.propagate = False
+if not any(
+    isinstance(handler, TimedRotatingFileHandler)
+    and Path(getattr(handler, "baseFilename", "")).resolve()
+    == timing_log_path.resolve()
+    for handler in TIMING_LOGGER.handlers
+):
+    TIMING_LOGGER.addHandler(timing_handler)
+
 # Create a logger for this module
 logger = logging.getLogger(__name__)
 logger.info("Logging configured with daily rotation")

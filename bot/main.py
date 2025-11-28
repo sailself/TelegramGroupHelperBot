@@ -36,6 +36,7 @@ from bot.handlers import (
     vid_handler,
 )
 from bot.utils.http import close_http_session
+from bot.utils.timing import wrap_with_command_timing
 
 # Configure logging
 logging.basicConfig(
@@ -74,23 +75,57 @@ def main():
     application = builder.build()
     
     # Register handlers
-    application.add_handler(CommandHandler("start", start_handler))
-    application.add_handler(CommandHandler("help", help_handler))
-    application.add_handler(CommandHandler("tldr", tldr_handler))
-    application.add_handler(CommandHandler("factcheck", factcheck_handler))
+    application.add_handler(
+        CommandHandler("start", wrap_with_command_timing("start", start_handler))
+    )
+    application.add_handler(
+        CommandHandler("help", wrap_with_command_timing("help", help_handler))
+    )
+    application.add_handler(
+        CommandHandler("tldr", wrap_with_command_timing("tldr", tldr_handler))
+    )
+    application.add_handler(
+        CommandHandler(
+            "factcheck",
+            wrap_with_command_timing("factcheck", factcheck_handler),
+        )
+    )
     application.add_handler(CommandHandler("q", q_handler))
-    application.add_handler(CommandHandler("img", img_handler))
-    application.add_handler(CommandHandler("vid", vid_handler))
-    application.add_handler(CommandHandler("profileme", profileme_handler))
-    application.add_handler(CommandHandler("paintme", paintme_handler))
-    application.add_handler(CommandHandler("portraitme", paintme_handler))
-    application.add_handler(CommandHandler("support", support_handler))
+    application.add_handler(
+        CommandHandler("img", wrap_with_command_timing("img", img_handler))
+    )
+    application.add_handler(
+        CommandHandler("vid", wrap_with_command_timing("vid", vid_handler))
+    )
+    application.add_handler(
+        CommandHandler(
+            "profileme",
+            wrap_with_command_timing("profileme", profileme_handler),
+        )
+    )
+    application.add_handler(
+        CommandHandler("paintme", wrap_with_command_timing("paintme", paintme_handler))
+    )
+    application.add_handler(
+        CommandHandler(
+            "portraitme",
+            wrap_with_command_timing("portraitme", paintme_handler),
+        )
+    )
+    application.add_handler(
+        CommandHandler(
+            "support", wrap_with_command_timing("support", support_handler)
+        )
+    )
     
     # Callback query handler for model selection
     application.add_handler(CallbackQueryHandler(model_selection_callback))
     
     # Handler for media groups
-    application.add_handler(MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_media_group), group=1)
+    application.add_handler(
+        MessageHandler(filters.PHOTO & ~filters.COMMAND, handle_media_group),
+        group=1,
+    )
 
     # Add a message handler to log all messages
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, log_message))
