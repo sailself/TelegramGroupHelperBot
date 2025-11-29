@@ -47,6 +47,8 @@ logging.basicConfig(
 logging.getLogger('bot.handlers').setLevel(logging.DEBUG)
 logger = logging.getLogger(__name__)
 
+COMMAND_UPDATE_FILTER = filters.UpdateType.MESSAGE
+
 
 async def init_db_wrapper():
     """Initialize the database and load whitelist."""
@@ -76,45 +78,74 @@ def main():
     
     # Register handlers
     application.add_handler(
-        CommandHandler("start", wrap_with_command_timing("start", start_handler))
+        CommandHandler(
+            "start",
+            wrap_with_command_timing("start", start_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
     )
     application.add_handler(
-        CommandHandler("help", wrap_with_command_timing("help", help_handler))
+        CommandHandler(
+            "help",
+            wrap_with_command_timing("help", help_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
     )
     application.add_handler(
-        CommandHandler("tldr", wrap_with_command_timing("tldr", tldr_handler))
+        CommandHandler(
+            "tldr",
+            wrap_with_command_timing("tldr", tldr_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
     )
     application.add_handler(
         CommandHandler(
             "factcheck",
             wrap_with_command_timing("factcheck", factcheck_handler),
+            filters=COMMAND_UPDATE_FILTER,
         )
     )
-    application.add_handler(CommandHandler("q", q_handler))
+    application.add_handler(CommandHandler("q", q_handler, filters=COMMAND_UPDATE_FILTER))
     application.add_handler(
-        CommandHandler("img", wrap_with_command_timing("img", img_handler))
+        CommandHandler(
+            "img",
+            wrap_with_command_timing("img", img_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
     )
     application.add_handler(
-        CommandHandler("vid", wrap_with_command_timing("vid", vid_handler))
+        CommandHandler(
+            "vid",
+            wrap_with_command_timing("vid", vid_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
     )
     application.add_handler(
         CommandHandler(
             "profileme",
             wrap_with_command_timing("profileme", profileme_handler),
+            filters=COMMAND_UPDATE_FILTER,
         )
     )
     application.add_handler(
-        CommandHandler("paintme", wrap_with_command_timing("paintme", paintme_handler))
+        CommandHandler(
+            "paintme",
+            wrap_with_command_timing("paintme", paintme_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
     )
     application.add_handler(
         CommandHandler(
             "portraitme",
             wrap_with_command_timing("portraitme", paintme_handler),
+            filters=COMMAND_UPDATE_FILTER,
         )
     )
     application.add_handler(
         CommandHandler(
-            "support", wrap_with_command_timing("support", support_handler)
+            "support",
+            wrap_with_command_timing("support", support_handler),
+            filters=COMMAND_UPDATE_FILTER,
         )
     )
     
