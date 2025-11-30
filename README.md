@@ -1,27 +1,28 @@
 # Telegram Group Helper Bot
 
-A Telegram bot for group chats that provides summarization, fact-checking, and question-answering capabilities using Google's Gemini AI with Google Search grounding.
+A Telegram bot for group chats that provides summarization, fact-checking, question-answering, and media generation using Google's Gemini AI with Google Search grounding, plus optional OpenRouter and Vertex AI integrations.
 
 ## Features
 
-- **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]`
+- **TLDR Summary**: Summarize the last N messages in a group chat with `/tldr [number]` (defaults to 100 messages when no number is provided)
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
-- **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 3 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
-- **Smart Model Selection**: Automatic filtering to show only media-capable models (Gemini, Llama) when images, videos, or audio are present
-- **Image Generation**: Generate images with `/img <description>` or use `/image <description>` to pick resolution (2K/4K/1K) and aspect ratio. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
-- **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
-- **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
+- **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from Gemini plus any OpenRouter models defined in `openrouter_models.json` (the repo ships with Qwen 3, Z.AI GLM 4.5 Air, Meituan LongCat, and Grok 4.1 Fast, but you can swap in your own list)
+- **Smart Model Selection**: Inline buttons automatically hide models that cannot handle the attached media (images/video/audio) based on the capabilities you mark in `openrouter_models.json`
+- **Image Generation**: Generate images with `/img <description>` or use `/image <description>` to pick resolution (2K/4K/1K) and aspect ratio. Uses Gemini by default, or Vertex AI if configured. Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
+- **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>` using Gemini VEO by default (Vertex AI if enabled).
+- **Media Understanding**: Analyze images, videos, or audio (including Telegraph/Twitter/YouTube content) by replying with `/factcheck` or `/q`
+- **Personalized Profiles & Art**: Create profiles and portraits from chat history with `/profileme`, `/paintme`, and `/portraitme`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
 - **Telegraph Integration**: Automatically creates Telegraph pages for lengthy responses
 - **Database Logging**: Messages are stored in a database for summarization and analysis
 - **Multi-language Support**: Automatically detects and responds in the same language as the query
-- **Support Integration**: Customizable support message with Ko-fi link for tip collection
+- **Support Integration**: Customizable support message with a configurable support link button (Ko-fi or any URL)
 - **Proactive Cleanup**: Automatic cleanup of expired model selection messages every 5 seconds
 - **OpenRouter Integration**: Configurable support for OpenRouter models with fallback to Gemini-only mode
 
 ## Requirements
 
-- Python 3.13 or higher
+- Python 3.11 or higher
 - A Telegram Bot Token from [BotFather](https://t.me/botfather)
 - Google Gemini API key from [Google AI Studio](https://aistudio.google.com/)
 - Optional: Telegraph API access token (for optimal Telegraph integration)
@@ -73,9 +74,10 @@ Configure the bot by editing the `.env` file:
 
 ### OpenRouter settings (Optional):
 - `ENABLE_OPENROUTER`: Enable/disable OpenRouter model selection (default: "true")
-- `OPENROUTER_API_KEY`: Your OpenRouter API key for accessing Llama, Qwen, DeepSeek, and GPT models
-- `OPENROUTER_MODELS_CONFIG_PATH`: Optional path to a JSON file that lists the OpenRouter models exposed to the bot (defaults to `openrouter_models.json`)
+- `OPENROUTER_API_KEY`: Your OpenRouter API key for the models you expose
+- `OPENROUTER_BASE_URL`: Base URL for the standard Chat Completions API (default: "https://openrouter.ai/api/v1")
 - `OPENROUTER_ALPHA_BASE_URL`: Base URL for the alpha Responses API (default: "https://openrouter.ai/api/alpha")
+- `OPENROUTER_MODELS_CONFIG_PATH`: Optional path to a JSON file that lists the OpenRouter models exposed to the bot (defaults to the bundled `openrouter_models.json`)
 - `ENABLE_JINA_MCP`: Legacy flag for the deprecated Jina MCP integration (default: "false")
 - `JINA_AI_API_KEY`: Optional Jina API key (only used if you re-enable the legacy MCP integration)
 - `JINA_SEARCH_ENDPOINT`: Jina search API endpoint (default: "https://s.jina.ai/search")
@@ -83,9 +85,9 @@ Configure the bot by editing the `.env` file:
 - `ENABLE_EXA_SEARCH`: Enable/disable the Exa-powered search function available to OpenRouter models (default: "true")
 - `EXA_API_KEY`: Exa API key used for the search function
 - `EXA_SEARCH_ENDPOINT`: Exa search API endpoint (default: "https://api.exa.ai/search")
-- `DEEPSEEK_MODEL`, `QWEN_MODEL`, `LLAMA_MODEL`, `GROK_MODEL`, `GPT_MODEL`: Legacy fallback identifiers for direct command shortcuts. These are auto-populated from the JSON config when possible.
+- `DEEPSEEK_MODEL`, `QWEN_MODEL`, `LLAMA_MODEL`, `GROK_MODEL`, `GPT_MODEL`: Legacy alias values used when resolving shortcut keywords. These are auto-populated from the JSON config when possible.
 
-Create `openrouter_models.json` (or point `OPENROUTER_MODELS_CONFIG_PATH` to a custom location) to control which OpenRouter models are offered in the `/q` picker. A sample is provided in `openrouter_models.json.example`:
+The repo ships with `openrouter_models.json` exposing Qwen 3, Z.AI GLM 4.5 Air, Meituan LongCat, and Grok 4.1 Fast. Point `OPENROUTER_MODELS_CONFIG_PATH` to another file if you want a different set. A minimal template is provided in `openrouter_models.json.example` (shown below):
 
 ```json
 {
@@ -126,9 +128,9 @@ Field meanings:
 ### Image hosting settings:
 - `CWD_PW_API_KEY`: Your CWD.PW API key for image hosting (optional, required for external image hosting)
 
-### Support/Ko-fi settings:
-- `SUPPORT_MESSAGE`: Custom message displayed with the `/support` command (default: "☕ If you find this bot helpful, consider supporting its development!")
-- `KOFI_LINK`: Your Ko-fi profile URL for accepting tips (default: "https://ko-fi.com/yourusername")
+### Support settings:
+- `SUPPORT_MESSAGE`: Custom message displayed with the `/support` command (default: "Thanks for supporting the bot! Tap the button below to open the support page.")
+- `SUPPORT_LINK`: URL to open when the support button is tapped (use any tip jar link, left blank by default)
 
 ### Whitelist settings:
 - `WHITELIST_FILE_PATH`: Path to the whitelist file containing allowed user IDs (default: "allowed_chat.txt")
@@ -139,17 +141,20 @@ Field meanings:
 - `WEBHOOK_URL`: URL for the webhook in production
 - `RATE_LIMIT_SECONDS`: Rate limiting between user requests (default: 15)
 - `MODEL_SELECTION_TIMEOUT`: Timeout for model selection in seconds (default: 30)
-- `GEMINI_MODEL`: Gemini model to use for general text tasks (default: gemini-pro)
-- `GEMINI_PRO_MODEL`: Gemini Pro model for more complex tasks, including media analysis (default: gemini-2.5-pro-exp-03-25)
-- `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: gemini-3-pro-image-preview)
-- `GEMINI_VIDEO_MODEL`: The Gemini model to use for video generation. Defaults to "veo-3.0-generate-preview".
+- `DEFAULT_Q_MODEL`: Default model to run when no selection is made in time (defaults to "gemini"; set to a model ID from `openrouter_models.json` to pick something else)
+- `GEMINI_MODEL`: Gemini model to use for general text tasks (default: `gemini-2.0-flash`)
+- `GEMINI_PRO_MODEL`: Gemini Pro model for media-heavy tasks (default: `gemini-2.5-pro-exp-03-25`)
+- `GEMINI_IMAGE_MODEL`: Gemini model for image generation (default: `gemini-3-pro-image-preview`)
+- `GEMINI_VIDEO_MODEL`: The Gemini/Vertex model to use for video generation (default: `veo-2.0-generate-001`)
+- `USER_HISTORY_MESSAGE_COUNT`: Number of recent messages to use for `/profileme`, `/paintme`, and `/portraitme` (default: 200)
+- `ACCESS_CONTROLLED_COMMANDS`: Comma-separated list of commands that require whitelist access (optional override to the defaults)
 
 ### Vertex AI Settings (Optional):
 - `VERTEX_PROJECT_ID`: Your Google Cloud Project ID (required if using Vertex AI for any feature).
 - `VERTEX_LOCATION`: The Google Cloud region for your Vertex AI resources (e.g., `us-central1`, required if using Vertex AI).
 - `USE_VERTEX_IMAGE`: Set to "true" to use Vertex AI for image generation via the `/img` command (default: "false").
 - `VERTEX_IMAGE_MODEL`: The specific Vertex AI image generation model to use (e.g., `imagegeneration@006`).
-- `USE_VERTEX_VIDEO`: Set to "true" to use Vertex AI for video generation via the `/vid` command (default: "false", currently uses Gemini VEO).
+- `USE_VERTEX_VIDEO`: Set to "true" to use Vertex AI for video generation via the `/vid` command (default: "false"; otherwise uses Gemini VEO via `GEMINI_VIDEO_MODEL`).
 - `VERTEX_VIDEO_MODEL`: The specific Vertex AI video generation model to use if `USE_VERTEX_VIDEO` is true.
 
 ## Example Configuration
@@ -175,7 +180,9 @@ GEMINI_API_KEY=your_gemini_api_key_here
 # Multi-model support
 ENABLE_OPENROUTER=true
 OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_ALPHA_BASE_URL=https://openrouter.ai/api/alpha
+OPENROUTER_MODELS_CONFIG_PATH=openrouter_models.json
 ENABLE_JINA_MCP=false
 JINA_AI_API_KEY=
 JINA_SEARCH_ENDPOINT=https://s.jina.ai/search
@@ -183,15 +190,20 @@ JINA_READER_ENDPOINT=https://r.jina.ai/
 ENABLE_EXA_SEARCH=true
 EXA_API_KEY=your_exa_api_key
 EXA_SEARCH_ENDPOINT=https://api.exa.ai/search
-DEEPSEEK_MODEL=deepseek/deepseek-v3
-QWEN_MODEL=qwen/qwen-2.5-72b-instruct
-LLAMA_MODEL=meta-llama/llama-3.1-405b-instruct
+
+# Model aliases used for shortcuts/timeouts (match entries in your model config)
+DEFAULT_Q_MODEL=gemini
+QWEN_MODEL=qwen/qwen3-235b-a22b:free
+GROK_MODEL=x-ai/grok-4.1-fast:free
+LLAMA_MODEL=meta-llama/llama-4-maverick:free
+DEEPSEEK_MODEL=deepseek/deepseek-r1-0528:free
 GPT_MODEL=openai/gpt-4o
 
 # Customization
 MODEL_SELECTION_TIMEOUT=60
 TELEGRAM_MAX_LENGTH=4000
 RATE_LIMIT_SECONDS=10
+USER_HISTORY_MESSAGE_COUNT=200
 
 # Optional features
 TELEGRAPH_ACCESS_TOKEN=your_telegraph_token
@@ -270,29 +282,30 @@ The bot provides flexible AI model selection through an intuitive interface:
 
 ### Interactive Model Selection
 - **Smart Interface**: Use `/q <question>` to get interactive buttons for model selection
-- **4 AI Models**: Choose from Gemini 3 ✨, Llama 4, Qwen 3, and DeepSeek 3.1
-- **Media-Aware**: When images, videos, or audio are present, only media-capable models (Gemini, Llama) are shown
+- **Config-Driven Models**: Buttons show Gemini plus whatever you list in `openrouter_models.json` (default: Qwen 3, Z.AI GLM 4.5 Air, Meituan LongCat, and Grok 4.1 Fast)
+- **Media-Aware**: When images, videos, or audio are present, only models marked as supporting those media types are shown
 - **User-Specific**: Only the original requester can select the model (prevents button hijacking)
-- **Auto-Timeout**: Selection expires after 30 seconds (configurable) with automatic message cleanup
+- **Auto-Timeout**: Selection expires after 30 seconds (configurable) with automatic message cleanup and fallback to `DEFAULT_Q_MODEL`
 
 ### Direct Model Access
+Set `DEFAULT_Q_MODEL` to `gemini` or any model ID from your config to decide what runs automatically when a user does not pick a model in time. Legacy alias env vars (`LLAMA_MODEL`, `QWEN_MODEL`, `DEEPSEEK_MODEL`, `GROK_MODEL`, `GPT_MODEL`) are used to resolve shortcuts and populate the picker when present.
 
 ### OpenRouter Fallback
 - **Flexible Configuration**: Can be disabled via `ENABLE_OPENROUTER=false`
 - **Graceful Fallback**: Automatically uses Gemini-only mode when OpenRouter is unavailable
 - **Cost Control**: Disable OpenRouter to avoid API costs while keeping full functionality
 
-## Image Understanding
+## Media Understanding
 
-The bot leverages Gemini's advanced image understanding capabilities to:
+The bot leverages Gemini's advanced media understanding capabilities to:
 
-- Analyze photos shared in the group
-- Answer questions about image content
-- Fact-check claims in images or captions
+- Analyze photos, videos, and audio shared in the group (including Telegraph/Twitter/YouTube content pulled into the request)
+- Answer questions about media content
+- Fact-check claims in messages, captions, or audio/video clips
 - Detect objects and scenes in photos
 - Process multiple image formats (JPEG, PNG, WEBP, HEIC, HEIF)
 
-Simply reply to an image with `/q What's in this picture?` or `/factcheck` to analyze visual content.
+Simply reply to supported media with `/q What's in this?` or `/factcheck` to analyze the content.
 
 ## User and Chat Whitelist
 
