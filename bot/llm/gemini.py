@@ -861,28 +861,29 @@ async def generate_image_with_gemini(
         prompt: The user's description of the desired image.
         input_image_urls: Optional list of URLs to images to edit (up to 10).
         upload_to_cwd: Whether to upload the generated image to cwd.pw.
-        aspect_ratio: Desired aspect ratio (e.g., "4:3"). Defaults to "4:3".
+        aspect_ratio: Desired aspect ratio (e.g., "4:3"). Defaults to letting the model decide.
         resolution: Desired output resolution ("1K", "2K", "4K"). Defaults to "2K".
         system_prompt: Optional system instruction for the generation request.
 
     Returns:
         The generated image as bytes, or None if generation failed.
     """
-    resolved_aspect_ratio = aspect_ratio or "4:3"
     resolved_resolution = resolution or "2K"
+    aspect_ratio_for_logging = aspect_ratio or "auto"
     logger.info(
         "Generating image with prompt: %s... (aspect_ratio=%s, resolution=%s)",
         prompt[:100],
-        resolved_aspect_ratio,
+        aspect_ratio_for_logging,
         resolved_resolution,
     )
 
     try:
         image_generation_prompt = prompt
         response = None
-        image_config = types.ImageConfig(
-            aspect_ratio=resolved_aspect_ratio, image_size=resolved_resolution
-        )
+        image_config_kwargs = {"image_size": resolved_resolution}
+        if aspect_ratio:
+            image_config_kwargs["aspect_ratio"] = aspect_ratio
+        image_config = types.ImageConfig(**image_config_kwargs)
 
         # If there are input images, include them in the request
         if input_image_urls:

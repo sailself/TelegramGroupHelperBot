@@ -102,6 +102,7 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 - `factcheck_handler(update, context)`: Requires a reply, extracts linked Telegraph/Twitter content, downloads media, streams output via Gemini, and pipes final results through `send_response`.
 - `handle_media_group(update, context)`: Keeps a transient cache of media-group messages inside `context.bot_data` so `/img` can operate on full albums.
 - `img_handler(update, context)`: Uses Gemini or Vertex (if enabled) for image generation/editing, handles both inline prompts and replied media, uploads results via `send_response`, and persists the original request text for analytics.
+- `image_handler(update, context)`: Drives the `/image` command; prompts for resolution (2K/4K/1K) and then aspect ratio (4:3, 3:4, 16:9, 9:16, 1:1, 21:9, 3:2, 2:3, 5:4, 4:5) with `MODEL_SELECTION_TIMEOUT` defaults to 2K and 4:3 before calling the shared image generation pipeline, and adds a cwd.pw link for uncompressed delivery when 4K is chosen.
 - `vid_handler(update, context)`: Bridges `/vid` requests to `generate_video_with_veo`, optionally attaching image bytes from the replied message, and sends the resulting MP4/WebM back to the user.
 - `start_handler(update, context)`: Replies with a command overview when someone starts the bot in private or in a chat.
 - `paintme_handler(update, context)`: Builds an imaginative persona-based image prompt from the user’s recent chat history and calls `call_gemini` + image generation to return either a representation or portrait (for `/portraitme` alias).
@@ -247,4 +248,3 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 
 ### `migrations/versions/add_unique_constraint.py`
 - Follow-up revision that recreates the `messages` table on SQLite to enforce the unique constraint retroactively while deduplicating rows.
-

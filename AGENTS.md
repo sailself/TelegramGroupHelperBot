@@ -106,5 +106,5 @@ Guide for autonomous contributors working inside `TelegramGroupHelperBot`. Keep 
 
 ## Agent Activity Logging
 - Every autonomous session must append a diary under `agent_logs/agent_log_<timestamp>Z.md` (UTC ISO 8601 with colons replaced by hyphens).
-- Each entry should record, in order: **Step** (command/action), **Thought** (why/considerations), **Result** (outcome, files touched/modified, follow-ups). Include code/diff summaries for edits.
+- Each entry should record, in order: **Step** (command/action), **Thought** (why/considerations), **Result** (outcome, files touched/modified, follow-ups) and **Detail** (detailed code/diff with filename and line numbers)
 - Append as you work; do not rewrite history except to fix typos. Plaintext only; never include secrets.

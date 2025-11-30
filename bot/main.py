@@ -23,6 +23,8 @@ from bot.handlers import (
     factcheck_handler,
     handle_media_group,
     help_handler,
+    image_handler,
+    image_selection_callback,
     img_handler,
     load_whitelist,
     log_message,
@@ -115,6 +117,13 @@ def main():
     )
     application.add_handler(
         CommandHandler(
+            "image",
+            wrap_with_command_timing("image", image_handler),
+            filters=COMMAND_UPDATE_FILTER,
+        )
+    )
+    application.add_handler(
+        CommandHandler(
             "vid",
             wrap_with_command_timing("vid", vid_handler),
             filters=COMMAND_UPDATE_FILTER,
@@ -149,7 +158,12 @@ def main():
         )
     )
     
-    # Callback query handler for model selection
+    # Callback query handlers
+    application.add_handler(
+        CallbackQueryHandler(
+            image_selection_callback, pattern=r"^image_(?:res|aspect):"
+        )
+    )
     application.add_handler(CallbackQueryHandler(model_selection_callback))
     
     # Handler for media groups

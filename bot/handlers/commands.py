@@ -3,13 +3,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from datetime import datetime
 from io import BytesIO
-from typing import List, Optional
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
 import langid
 from pycountry import languages
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto, Update
+from telegram import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Message,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -25,6 +34,7 @@ from bot.config import (
     SUPPORT_MESSAGE,
     TELEGRAPH_AUTHOR_NAME,
     TLDR_SYSTEM_PROMPT,
+    MODEL_SELECTION_TIMEOUT,
     USE_VERTEX_IMAGE,
     USER_HISTORY_MESSAGE_COUNT,
     VERTEX_IMAGE_MODEL,
@@ -56,6 +66,360 @@ from .content import (
 from .responses import send_response
 
 logger = logging.getLogger(__name__)
+
+IMAGE_RESOLUTION_OPTIONS = ["2K", "4K", "1K"]
+IMAGE_ASPECT_RATIO_OPTIONS = [
+    "4:3",
+    "3:4",
+    "16:9",
+    "9:16",
+    "1:1",
+    "21:9",
+    "3:2",
+    "2:3",
+    "5:4",
+    "4:5",
+]
+IMAGE_RESOLUTION_CALLBACK_PREFIX = "image_res:"
+IMAGE_ASPECT_RATIO_CALLBACK_PREFIX = "image_aspect:"
+IMAGE_DEFAULT_RESOLUTION = "2K"
+IMAGE_DEFAULT_ASPECT_RATIO = "4:3"
+
+
+def _parse_resolution_value_k(resolution: Optional[str]) -> Optional[float]:
+    """Convert a resolution string like '4K' into a numeric K value."""
+    if not resolution:
+        return None
+    match = re.match(r"(?i)(\d+(?:\.\d+)?)k", resolution.strip())
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+@dataclass
+class ImageRequestContext:
+    prompt: str
+    image_urls: List[str]
+    telegraph_contents: List[str]
+    original_message_text: str
+
+
+pending_image_requests: Dict[str, Dict[str, Any]] = {}
+
+
+def _strip_command_prefix(text: str, command_prefix: str) -> str:
+    """Remove a command prefix from text if present."""
+    if text.startswith(command_prefix):
+        return text[len(command_prefix) :].strip()
+    return text
+
+
+def _build_image_request_key(chat_id: int, message_id: int) -> str:
+    """Build a unique key for tracking an image generation request."""
+    return f"{chat_id}:{message_id}"
+
+
+async def prepare_image_request(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, command_prefix: str
+) -> ImageRequestContext:
+    """Extract prompt, media, and Telegraph content for image commands."""
+    if update.effective_message is None:
+        return ImageRequestContext("", [], [], "")
+
+    original_message_text = update.effective_message.text or update.effective_message.caption or ""
+    prompt = _strip_command_prefix(original_message_text, command_prefix)
+    image_urls: List[str] = []
+
+    if update.effective_message.media_group_id:
+        logger.info(
+            "Handling media group with ID: %s", update.effective_message.media_group_id
+        )
+        await asyncio.sleep(1)
+        media_messages = context.bot_data.get(update.effective_message.media_group_id, [])
+        if update.effective_message not in media_messages:
+            media_messages.append(update.effective_message)
+
+        for msg in media_messages:
+            if msg.photo:
+                photo = msg.photo[-1]
+                photo_file = await context.bot.get_file(photo.file_id)
+                image_urls.append(photo_file.file_path)
+    elif update.effective_message.photo:
+        photo = update.effective_message.photo[-1]
+        photo_file = await context.bot.get_file(photo.file_id)
+        image_urls.append(photo_file.file_path)
+    elif update.effective_message.sticker:
+        sticker_file = await context.bot.get_file(update.effective_message.sticker.file_id)
+        image_urls.append(sticker_file.file_path)
+
+    if not image_urls and update.effective_message.reply_to_message:
+        replied_message = update.effective_message.reply_to_message
+        if replied_message.media_group_id:
+            logger.info("Handling media group with ID: %s", replied_message.media_group_id)
+            await asyncio.sleep(1)
+            media_messages = context.bot_data.get(replied_message.media_group_id, [])
+            if replied_message not in media_messages:
+                media_messages.append(replied_message)
+
+            for msg in media_messages:
+                if msg.photo:
+                    photo = msg.photo[-1]
+                    photo_file = await context.bot.get_file(photo.file_id)
+                    image_urls.append(photo_file.file_path)
+        elif replied_message.photo:
+            photo = replied_message.photo[-1]
+            photo_file = await context.bot.get_file(photo.file_id)
+            image_urls.append(photo_file.file_path)
+        elif replied_message.sticker:
+            sticker_file = await context.bot.get_file(replied_message.sticker.file_id)
+            image_urls.append(sticker_file.file_path)
+
+        replied_text_content = replied_message.text or replied_message.caption or ""
+        if replied_text_content:
+            replied_text_content, _ = await extract_telegraph_urls_and_content(
+                replied_text_content, replied_message.entities
+            )
+            if prompt:
+                if not image_urls:
+                    prompt = f"{replied_text_content}\n\n{prompt}"
+            else:
+                prompt = replied_text_content
+
+    telegraph_contents: List[str] = []
+    if prompt:
+        telegraph_contents = []
+        prompt, telegraph_contents = await extract_telegraph_urls_and_content(
+            prompt, update.effective_message.entities
+        )
+
+    return ImageRequestContext(
+        prompt=prompt,
+        image_urls=image_urls,
+        telegraph_contents=telegraph_contents,
+        original_message_text=original_message_text,
+    )
+
+
+async def run_image_generation(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    processing_message: Message,
+    request_context: ImageRequestContext,
+    *,
+    aspect_ratio: Optional[str] = None,
+    resolution: Optional[str] = None,
+    include_uncompressed_link: bool = False,
+) -> None:
+    """Generate or edit an image using Gemini or Vertex and send it to the user."""
+    prompt = request_context.prompt
+    image_urls = request_context.image_urls
+    resolution_value_k = _parse_resolution_value_k(resolution)
+    should_link_uncompressed = (
+        include_uncompressed_link
+        and resolution_value_k is not None
+        and resolution_value_k >= 4
+    )
+    uncompressed_url: Optional[str] = None
+
+    try:
+        if USE_VERTEX_IMAGE and not image_urls:
+            logger.info(
+                "img_handler operating in Vertex AI mode for text-only prompt: '%s'",
+                prompt,
+            )
+
+            try:
+                images_data_list = await generate_image_with_vertex(
+                    prompt=prompt,
+                    number_of_images=1,
+                    upload_to_cwd=not should_link_uncompressed,
+                )
+                image_data = images_data_list[0] if images_data_list else None
+            except Exception as vertex_error:
+                logger.error(
+                    "Vertex AI image generation failed: %s", vertex_error, exc_info=True
+                )
+                logger.info("Falling back to Gemini for image generation")
+                image_data = await generate_image_with_gemini(
+                    prompt=prompt,
+                    input_image_urls=image_urls,
+                    upload_to_cwd=not should_link_uncompressed,
+                )
+        else:
+            logger.info("img_handler operating in Gemini mode for prompt: '%s'", prompt)
+
+            if image_urls:
+                logger.info(
+                    "Gemini: Processing image edit request with %d image(s): '%s'",
+                    len(image_urls),
+                    prompt,
+                )
+            else:
+                logger.info("Gemini: Processing image generation request: '%s'", prompt)
+
+            generation_kwargs: Dict[str, Any] = {
+                "prompt": prompt,
+                "input_image_urls": image_urls,
+            }
+            if aspect_ratio is not None:
+                generation_kwargs["aspect_ratio"] = aspect_ratio
+            if resolution is not None:
+                generation_kwargs["resolution"] = resolution
+            if should_link_uncompressed:
+                generation_kwargs["upload_to_cwd"] = False
+
+            image_data = await generate_image_with_gemini(**generation_kwargs)
+
+        try:
+            if image_data:
+                model_used = (
+                    VERTEX_IMAGE_MODEL
+                    if (USE_VERTEX_IMAGE and not image_urls)
+                    else GEMINI_IMAGE_MODEL
+                )
+                service_name = (
+                    "Vertex AI" if (USE_VERTEX_IMAGE and not image_urls) else "Gemini"
+                )
+
+                logger.info(
+                    "%s: Image data received. Attempting to send.", service_name
+                )
+                try:
+                    if should_link_uncompressed and CWD_PW_API_KEY:
+                        try:
+                            uncompressed_url = await upload_image_bytes_to_cwd(
+                                image_bytes=image_data,
+                                api_key=CWD_PW_API_KEY,
+                                mime_type="image/jpeg",
+                                model=model_used,
+                                prompt=prompt,
+                            )
+                            if uncompressed_url:
+                                logger.info(
+                                    "Uploaded uncompressed image to cwd.pw: %s",
+                                    uncompressed_url,
+                                )
+                        except Exception as upload_error:  # noqa: BLE001
+                            logger.error(
+                                "Failed to upload uncompressed image to cwd.pw: %s",
+                                upload_error,
+                                exc_info=True,
+                            )
+
+                    image_io = BytesIO(image_data)
+                    image_io.name = f"{service_name.lower()}_generated_image.jpg"
+                    base_caption = f"Generated by *{model_used}*"
+                    full_caption = f"{base_caption} with prompt: \n```\n{prompt}\n```"
+                    caption_prefix = (
+                        f"View uncompressed image [here]({uncompressed_url})\n"
+                        if uncompressed_url
+                        else ""
+                    )
+
+                    caption_body = full_caption
+                    if len(caption_prefix + caption_body) > 1000:
+                        telegraph_url = await create_telegraph_page(
+                            "Image Generation Prompt", f"{prompt}"
+                        )
+                        if telegraph_url:
+                            caption_body = (
+                                f"{base_caption} with prompt: \n"
+                                f"[View it here]({telegraph_url})"
+                            )
+                        else:
+                            truncated_prompt = (
+                                prompt[:900] + "..." if len(prompt) > 900 else prompt
+                            )
+                            caption_body = (
+                                f"{base_caption} with prompt: \n```\n{truncated_prompt}\n```"
+                            )
+                    caption = f"{caption_prefix}{caption_body}"
+
+                    await processing_message.edit_media(
+                        media=InputMediaPhoto(
+                            media=image_io,
+                            caption=caption,
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                    )
+                    logger.info(
+                        "%s: Image sent successfully by editing processing message with %s.",
+                        service_name,
+                        model_used,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.error(
+                        "%s: Error sending image via Telegram",
+                        service_name,
+                        exc_info=True,
+                    )
+            else:
+                service_name = (
+                    "Vertex AI" if (USE_VERTEX_IMAGE and not image_urls) else "Gemini"
+                )
+                logger.warning(
+                    "%s: Image generation failed (image_data is None).", service_name
+                )
+                if image_urls:
+                    await processing_message.edit_text(
+                        f"I couldn't edit the image with {service_name}. Please try:\n"
+                        "1. Simpler edit description\n2. More specific details\n3. Different edit type or try later"
+                    )
+                else:
+                    await processing_message.edit_text(
+                        f"I couldn't generate an image with {service_name}. Please try:\n"
+                        "1. Simpler prompt\n2. More specific details\n3. Try again later"
+                    )
+        except ImageGenerationError as e:
+            logger.error("ImageGenerationError in img_handler: %s", e)
+            await processing_message.edit_text(f"Image generation failed: {e}")
+
+        classified_language = langid.classify(request_context.original_message_text)[0]
+        language = languages.get(alpha_2=classified_language).name
+        username = "Anonymous"
+        if update.effective_sender:
+            sender = update.effective_message.from_user
+            if sender.full_name:
+                username = sender.full_name
+            elif sender.first_name and sender.last_name:
+                username = f"{sender.first_name} {sender.last_name}"
+            elif sender.first_name:
+                username = sender.first_name
+            elif sender.username:
+                username = sender.username
+
+        await queue_message_insert(
+            user_id=update.effective_message.from_user.id,
+            username=username,
+            text=request_context.original_message_text,
+            language=language,
+            date=update.effective_message.date,
+            reply_to_message_id=(
+                update.effective_message.reply_to_message.message_id
+                if update.effective_message.reply_to_message
+                else None
+            ),
+            chat_id=update.effective_chat.id if update.effective_chat else None,
+            message_id=update.effective_message.message_id,
+        )
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("Error in img_handler: %s", e, exc_info=True)
+        error_message_for_user = (
+            "Sorry, an unexpected error occurred while processing your image request."
+        )
+        try:
+            await processing_message.edit_text(error_message_for_user)
+        except Exception as edit_err:
+            logger.error(
+                "Failed to edit processing message with error: %s",
+                edit_err,
+                exc_info=True,
+            )
+
 
 
 async def tldr_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -605,280 +969,345 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         return
 
-    # Get message text without the command
-    original_message_text = (
-        update.effective_message.text or update.effective_message.caption or ""
-    )
-    if original_message_text.startswith("/img"):
-        prompt = original_message_text[4:].strip()
-    else:
-        prompt = ""
-
-    image_urls = []
-
-    # Check for media group
-    if update.effective_message.media_group_id:
-        # This part is tricky as we need to gather all messages from the media group.
-        # We'll rely on a caching mechanism that should be implemented in the main bot logic.
-        # For now, we'll assume a helper function get_media_group_messages exists.
-        # This is a placeholder for a more robust implementation.
-        logger.info(
-            "Handling media group with ID: %s", update.effective_message.media_group_id
-        )
-        # A simple sleep might work for small groups if messages arrive close together.
-        await asyncio.sleep(1)
-        media_messages = context.bot_data.get(
-            update.effective_message.media_group_id, []
-        )
-        # The current message might not be in bot_data yet, so we add it.
-        if update.effective_message not in media_messages:
-            media_messages.append(update.effective_message)
-
-        for msg in media_messages:
-            if msg.photo:
-                photo = msg.photo[-1]
-                photo_file = await context.bot.get_file(photo.file_id)
-                image_urls.append(photo_file.file_path)
-    elif update.effective_message.photo:
-        photo = update.effective_message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
-        image_urls.append(photo_file.file_path)
-    elif update.effective_message.sticker:
-        sticker_file = await context.bot.get_file(
-            update.effective_message.sticker.file_id
-        )
-        image_urls.append(sticker_file.file_path)
-
-    # Get potential image from a replied message if no image in the command message
-    if not image_urls and update.effective_message.reply_to_message:
-        replied_message = update.effective_message.reply_to_message
-        # Check for media group
-        if replied_message.media_group_id:
-            # This part is tricky as we need to gather all messages from the media group.
-            # We'll rely on a caching mechanism that should be implemented in the main bot logic.
-            # For now, we'll assume a helper function get_media_group_messages exists.
-            # This is a placeholder for a more robust implementation.
-            logger.info(
-                "Handling media group with ID: %s", replied_message.media_group_id
-            )
-            # A simple sleep might work for small groups if messages arrive close together.
-            await asyncio.sleep(1)
-            media_messages = context.bot_data.get(replied_message.media_group_id, [])
-            # The current message might not be in bot_data yet, so we add it.
-            if replied_message not in media_messages:
-                media_messages.append(replied_message)
-
-            for msg in media_messages:
-                if msg.photo:
-                    photo = msg.photo[-1]
-                    photo_file = await context.bot.get_file(photo.file_id)
-                    image_urls.append(photo_file.file_path)
-        elif replied_message.photo:
-            photo = replied_message.photo[-1]
-            photo_file = await context.bot.get_file(photo.file_id)
-            image_urls.append(photo_file.file_path)  # Add the photo to the list
-        elif replied_message.sticker:
-            sticker_file = await context.bot.get_file(
-                replied_message.sticker.file_id
-            )
-            image_urls.append(sticker_file.file_path)
-
-        replied_text_content = replied_message.text or replied_message.caption or ""
-        if replied_text_content:
-            # Extract Telegraph content if present in replied message
-            replied_text_content, _ = await extract_telegraph_urls_and_content(
-                replied_text_content, replied_message.entities
-            )
-
-            if prompt:
-                if not image_urls:
-                    prompt = f"{replied_text_content}\n\n{prompt}"
-            else:
-                prompt = replied_text_content
-
-    if not prompt:
-        await update.effective_message.reply_text(
-            "Please provide a description of the image you want to generate or edit. "
-            "For example: /img a cat playing piano"
-        )
-        return
-
-    # Extract Telegraph content if present in the main prompt
-    telegraph_contents = []
-    if prompt:
-        prompt, telegraph_contents = await extract_telegraph_urls_and_content(
-            prompt, update.effective_message.entities
-        )
-
-    # Send a processing message
-    processing_message_text = "Processing your image request... This may take a moment."
-    if telegraph_contents:
-        processing_message_text = f"Extracting content from {len(telegraph_contents)} Telegraph page(s) and processing your image request... This may take a moment."
-
-    processing_message = await update.effective_message.reply_text(
-        processing_message_text
-    )
-
+    processing_message = None
     try:
-        # Check if we should use Vertex AI for text-only image generation
-        if USE_VERTEX_IMAGE and not image_urls:
-            # Use Vertex AI for text-only image generation
-            logger.info(
-                "img_handler operating in Vertex AI mode for text-only prompt: '%s'",
-                prompt,
+        request_context = await prepare_image_request(update, context, "/img")
+        if not request_context.prompt:
+            await update.effective_message.reply_text(
+                "Please provide a description of the image you want to generate or edit. "
+                "For example: /img a cat playing piano"
+            )
+            return
+
+        processing_message_text = (
+            "Processing your image request... This may take a moment."
+        )
+        if request_context.telegraph_contents:
+            processing_message_text = (
+                "Extracting content from "
+                f"{len(request_context.telegraph_contents)} Telegraph page(s) and "
+                "processing your image request... This may take a moment."
             )
 
-            try:
-                images_data_list = await generate_image_with_vertex(
-                    prompt=prompt, number_of_images=1
-                )
-                image_data = images_data_list[0] if images_data_list else None
-            except Exception as vertex_error:
-                logger.error(
-                    "Vertex AI image generation failed: %s", vertex_error, exc_info=True
-                )
-                # Fallback to Gemini if Vertex fails
-                logger.info("Falling back to Gemini for image generation")
-                image_data = await generate_image_with_gemini(
-                    prompt=prompt, input_image_urls=image_urls
-                )
-        else:
-            # Use Gemini for image editing (with input images) or when Vertex is disabled
-            logger.info("img_handler operating in Gemini mode for prompt: '%s'", prompt)
-
-            if image_urls:
-                logger.info(
-                    "Gemini: Processing image edit request with %d image(s): '%s'",
-                    len(image_urls),
-                    prompt,
-                )
-            else:
-                logger.info("Gemini: Processing image generation request: '%s'", prompt)
-
-            image_data = await generate_image_with_gemini(
-                prompt=prompt, input_image_urls=image_urls
-            )
-
-        try:
-
-            if image_data:
-                # Determine which model was used based on the logic above
-                model_used = (
-                    VERTEX_IMAGE_MODEL
-                    if (USE_VERTEX_IMAGE and not image_urls)
-                    else GEMINI_IMAGE_MODEL
-                )
-                service_name = (
-                    "Vertex AI" if (USE_VERTEX_IMAGE and not image_urls) else "Gemini"
-                )
-
-                logger.info(
-                    "%s: Image data received. Attempting to send.", service_name
-                )
-                try:
-                    image_io = BytesIO(image_data)
-                    image_io.name = f"{service_name.lower()}_generated_image.jpg"
-                    # Check if caption would be too long (> 1000 characters)
-                    base_caption = f"Generated by *{model_used}*"
-                    full_caption = f"{base_caption} with prompt: \n```\n{prompt}\n```"
-
-                    if len(full_caption) > 1000:
-                        # Create Telegraph page for the prompt
-                        telegraph_url = await create_telegraph_page(
-                            "Image Generation Prompt", f"{prompt}"
-                        )
-                        if telegraph_url:
-                            caption = f"{base_caption} with prompt: \n[View it here]({telegraph_url})"
-                        else:
-                            # Fallback if Telegraph creation fails
-                            truncated_prompt = (
-                                prompt[:900] + "..." if len(prompt) > 900 else prompt
-                            )
-                            caption = f"{base_caption} with prompt: \n```\n{truncated_prompt}\n```"
-                    else:
-                        caption = full_caption
-
-                    await processing_message.edit_media(
-                        media=InputMediaPhoto(
-                            media=image_io,
-                            caption=caption,
-                            parse_mode=ParseMode.MARKDOWN,
-                        )
-                    )
-                    logger.info(
-                        "%s: Image sent successfully by editing processing message with %s.",
-                        service_name,
-                        model_used,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.error(
-                        "%s: Error sending image via Telegram",
-                        service_name,
-                        exc_info=True,
-                    )
-            else:
-                # Determine which service was attempted for error messages
-                service_name = (
-                    "Vertex AI" if (USE_VERTEX_IMAGE and not image_urls) else "Gemini"
-                )
-                logger.warning(
-                    "%s: Image generation failed (image_data is None).", service_name
-                )
-                if image_urls:
-                    await processing_message.edit_text(
-                        f"I couldn't edit the image with {service_name}. Please try:\n"
-                        "1. Simpler edit description\n2. More specific details\n3. Different edit type or try later"
-                    )
-                else:
-                    await processing_message.edit_text(
-                        f"I couldn't generate an image with {service_name}. Please try:\n"
-                        "1. Simpler prompt\n2. More specific details\n3. Try again later"
-                    )
-        except ImageGenerationError as e:
-            logger.error("ImageGenerationError in img_handler: %s", e)
-            await processing_message.edit_text(f"Image generation failed: {e}")
-
-        language = languages.get(alpha_2=langid.classify(original_message_text)[0]).name
-        username = "Anonymous"
-        if update.effective_sender:
-            sender = update.effective_message.from_user
-            if sender.full_name:
-                username = sender.full_name
-            elif sender.first_name and sender.last_name:
-                username = f"{sender.first_name} {sender.last_name}"
-            elif sender.first_name:
-                username = sender.first_name
-            elif sender.username:
-                username = sender.username
-
-        await queue_message_insert(
-            user_id=update.effective_message.from_user.id,
-            username=username,
-            text=original_message_text,  # Use original text without Telegraph content expansion
-            language=language,
-            date=update.effective_message.date,
-            reply_to_message_id=(
-                update.effective_message.reply_to_message.message_id
-                if update.effective_message.reply_to_message
-                else None
-            ),
-            chat_id=update.effective_chat.id,
-            message_id=update.effective_message.message_id,
+        processing_message = await update.effective_message.reply_text(
+            processing_message_text
         )
 
+        await run_image_generation(
+            update, context, processing_message, request_context
+        )
     except Exception as e:  # noqa: BLE001
         logger.error("Error in img_handler: %s", e, exc_info=True)
         error_message_for_user = (
             "Sorry, an unexpected error occurred while processing your image request."
         )
-        try:
-            await processing_message.edit_text(error_message_for_user)
-        except Exception as edit_err:
-            logger.error(
-                "Failed to edit processing message with error: %s",
-                edit_err,
-                exc_info=True,
-            )
+        if processing_message:
+            try:
+                await processing_message.edit_text(error_message_for_user)
+            except Exception as edit_err:
+                logger.error(
+                    "Failed to edit processing message with error: %s",
+                    edit_err,
+                    exc_info=True,
+                )
+
+
+def _build_resolution_keyboard(request_key: str) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            option,
+            callback_data=f"{IMAGE_RESOLUTION_CALLBACK_PREFIX}{request_key}|{option}",
+        )
+        for option in IMAGE_RESOLUTION_OPTIONS
+    ]
+    return InlineKeyboardMarkup([buttons])
+
+
+def _build_aspect_ratio_keyboard(request_key: str) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(
+            option,
+            callback_data=f"{IMAGE_ASPECT_RATIO_CALLBACK_PREFIX}{request_key}|{option}",
+        )
+        for option in IMAGE_ASPECT_RATIO_OPTIONS
+    ]
+    rows: List[List[InlineKeyboardButton]] = []
+    for index in range(0, len(buttons), 3):
+        rows.append(buttons[index : index + 3])
+    return InlineKeyboardMarkup(rows)
+
+
+def _parse_image_callback_data(data: str, prefix: str) -> tuple[str, str] | None:
+    if not data.startswith(prefix):
+        return None
+    payload = data[len(prefix) :]
+    try:
+        request_key, value = payload.split("|", 1)
+    except ValueError:
+        return None
+    return request_key, value
+
+
+def _cancel_task(task: Optional[asyncio.Task]) -> None:
+    if task and not task.done():
+        task.cancel()
+
+
+def _clear_image_request_tasks(request_data: Dict[str, Any]) -> None:
+    current_task = asyncio.current_task()
+    resolution_task = request_data.get("resolution_timeout_task")
+    aspect_task = request_data.get("aspect_timeout_task")
+    if resolution_task is not current_task:
+        _cancel_task(resolution_task)
+    if aspect_task is not current_task:
+        _cancel_task(aspect_task)
+
+
+async def _finalize_image_request(
+    request_key: str,
+    *,
+    resolution: Optional[str],
+    aspect_ratio: Optional[str],
+    notice_text: Optional[str] = None,
+    include_uncompressed_link: bool = False,
+) -> None:
+    request_data = pending_image_requests.pop(request_key, None)
+    if not request_data:
+        return
+
+    _clear_image_request_tasks(request_data)
+
+    selection_message = request_data["selection_message"]
+    request_context: ImageRequestContext = request_data["request_context"]
+    final_resolution = resolution or IMAGE_DEFAULT_RESOLUTION
+    final_aspect_ratio = (
+        aspect_ratio if aspect_ratio is not None else IMAGE_DEFAULT_ASPECT_RATIO
+    )
+
+    processing_message_text = notice_text or (
+        f"Generating your image at {final_resolution} resolution "
+        f"with {final_aspect_ratio} aspect ratio..."
+    )
+    if request_context.telegraph_contents:
+        processing_message_text = (
+            f"{processing_message_text}\nIncluding content from "
+            f"{len(request_context.telegraph_contents)} Telegraph page(s)."
+        )
+
+    try:
+        await selection_message.edit_text(
+            processing_message_text, reply_markup=None
+        )
+    except Exception as edit_error:  # noqa: BLE001
+        logger.warning(
+            "Failed to update image selection message: %s", edit_error, exc_info=True
+        )
+
+    await run_image_generation(
+        request_data["update"],
+        request_data["context"],
+        selection_message,
+        request_context,
+        aspect_ratio=final_aspect_ratio,
+        resolution=final_resolution,
+        include_uncompressed_link=include_uncompressed_link,
+    )
+
+
+async def handle_image_resolution_timeout(request_key: str) -> None:
+    await asyncio.sleep(MODEL_SELECTION_TIMEOUT)
+    request_data = pending_image_requests.get(request_key)
+    if request_data is None or request_data.get("resolution"):
+        return
+
+    await _finalize_image_request(
+        request_key,
+        resolution=IMAGE_DEFAULT_RESOLUTION,
+        aspect_ratio=IMAGE_DEFAULT_ASPECT_RATIO,
+        notice_text=(
+            "No resolution selected in time. Using default 2K resolution and "
+            "4:3 aspect ratio..."
+        ),
+        include_uncompressed_link=True,
+    )
+
+
+async def handle_image_aspect_timeout(request_key: str) -> None:
+    await asyncio.sleep(MODEL_SELECTION_TIMEOUT)
+    request_data = pending_image_requests.get(request_key)
+    if request_data is None or request_data.get("aspect_ratio"):
+        return
+
+    resolution = request_data.get("resolution") or IMAGE_DEFAULT_RESOLUTION
+    await _finalize_image_request(
+        request_key,
+        resolution=resolution,
+        aspect_ratio=IMAGE_DEFAULT_ASPECT_RATIO,
+        notice_text=(
+            f"Aspect ratio not selected in time. Using {IMAGE_DEFAULT_ASPECT_RATIO} "
+            f"with {resolution} resolution..."
+        ),
+        include_uncompressed_link=True,
+    )
+
+
+async def _handle_resolution_selection(
+    query: CallbackQuery, request_key: str, selected_resolution: str
+) -> None:
+    request_data = pending_image_requests.get(request_key)
+    if request_data is None:
+        await query.answer("This request has expired.", show_alert=True)
+        return
+    if query.from_user and request_data["user_id"] != query.from_user.id:
+        await query.answer(
+            "Only the requester can choose for this image.", show_alert=True
+        )
+        return
+    if request_data.get("resolution"):
+        await query.answer("Resolution already selected.")
+        return
+
+    request_data["resolution"] = selected_resolution
+    _cancel_task(request_data.get("resolution_timeout_task"))
+
+    try:
+        await query.edit_message_text(
+            f"Resolution set to {selected_resolution}. "
+            f"Choose an aspect ratio (default: {IMAGE_DEFAULT_ASPECT_RATIO}).",
+            reply_markup=_build_aspect_ratio_keyboard(request_key),
+        )
+    except Exception as edit_error:  # noqa: BLE001
+        logger.warning(
+            "Failed to update resolution selection message: %s",
+            edit_error,
+            exc_info=True,
+        )
+
+    request_data["aspect_timeout_task"] = asyncio.create_task(
+        handle_image_aspect_timeout(request_key)
+    )
+    await query.answer(f"Resolution set to {selected_resolution}")
+
+
+async def _handle_aspect_ratio_selection(
+    query: CallbackQuery, request_key: str, aspect_ratio: str
+) -> None:
+    request_data = pending_image_requests.get(request_key)
+    if request_data is None:
+        await query.answer("This request has expired.", show_alert=True)
+        return
+    if query.from_user and request_data["user_id"] != query.from_user.id:
+        await query.answer(
+            "Only the requester can choose for this image.", show_alert=True
+        )
+        return
+    if request_data.get("aspect_ratio"):
+        await query.answer("Aspect ratio already selected.")
+        return
+
+    if aspect_ratio not in IMAGE_ASPECT_RATIO_OPTIONS:
+        await query.answer("Invalid aspect ratio.", show_alert=True)
+        return
+
+    request_data["aspect_ratio"] = aspect_ratio
+    _cancel_task(request_data.get("aspect_timeout_task"))
+
+    final_resolution = request_data.get("resolution") or IMAGE_DEFAULT_RESOLUTION
+    await query.answer(f"Aspect ratio set to {aspect_ratio}")
+    await _finalize_image_request(
+        request_key,
+        resolution=final_resolution,
+        aspect_ratio=aspect_ratio,
+        include_uncompressed_link=True,
+    )
+
+
+async def image_selection_callback(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:  # noqa: ARG001
+    """Handle resolution/aspect ratio selections for /image."""
+    query = update.callback_query
+    if query is None or query.data is None:
+        return
+
+    if query.data.startswith(IMAGE_RESOLUTION_CALLBACK_PREFIX):
+        parsed = _parse_image_callback_data(
+            query.data, IMAGE_RESOLUTION_CALLBACK_PREFIX
+        )
+        if not parsed:
+            await query.answer("Invalid selection.", show_alert=True)
+            return
+        request_key, resolution = parsed
+        if resolution not in IMAGE_RESOLUTION_OPTIONS:
+            await query.answer("Invalid resolution.", show_alert=True)
+            return
+        await _handle_resolution_selection(query, request_key, resolution)
+        return
+
+    if query.data.startswith(IMAGE_ASPECT_RATIO_CALLBACK_PREFIX):
+        parsed = _parse_image_callback_data(
+            query.data, IMAGE_ASPECT_RATIO_CALLBACK_PREFIX
+        )
+        if not parsed:
+            await query.answer("Invalid selection.", show_alert=True)
+            return
+        request_key, aspect_ratio = parsed
+        await _handle_aspect_ratio_selection(query, request_key, aspect_ratio)
+
+
+async def image_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handler for the /image command with resolution/aspect selection."""
+    if (
+        update.effective_user is None
+        or update.effective_message is None
+        or update.effective_chat is None
+    ):
+        return
+
+    user_id = update.effective_user.id
+
+    if not await check_access_control(update, "image"):
+        return
+
+    if is_rate_limited(user_id):
+        await update.effective_message.reply_text(
+            "You're sending commands too quickly. Please wait a moment before trying again."
+        )
+        return
+
+    request_context = await prepare_image_request(update, context, "/image")
+    if not request_context.prompt:
+        await update.effective_message.reply_text(
+            "Please provide a description of the image you want to generate or edit. "
+            "For example: /image a cat playing piano"
+        )
+        return
+
+    request_key = _build_image_request_key(
+        update.effective_chat.id, update.effective_message.message_id
+    )
+    selection_message = await update.effective_message.reply_text(
+        "Choose the resolution for your image (default: 2K).",
+        reply_markup=_build_resolution_keyboard(request_key),
+    )
+
+    pending_image_requests[request_key] = {
+        "update": update,
+        "context": context,
+        "request_context": request_context,
+        "selection_message": selection_message,
+        "user_id": user_id,
+        "resolution": None,
+        "aspect_ratio": None,
+        "resolution_timeout_task": None,
+        "aspect_timeout_task": None,
+    }
+    resolution_timeout_task = asyncio.create_task(
+        handle_image_resolution_timeout(request_key)
+    )
+    pending_image_requests[request_key][
+        "resolution_timeout_task"
+    ] = resolution_timeout_task
 
 
 async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1084,6 +1513,7 @@ async def start_handler(
         "• /factcheck - Reply to a message or image to fact-check it\n"
         "• /q [question] - Ask me any question or analyze images\n"
         "• /img [description] - Generate or edit an image using Gemini\n"
+        "• /image [description] - Generate or edit an image with resolution/aspect choices\n"
         "• /vid [prompt] - Generate a video based on text and/or a replied-to image.\n"
         "• /profileme - Generate your user profile based on your chat history.\n"
         "• /paintme - Generate an image representing you based on your chat history.\n"
@@ -1380,6 +1810,9 @@ async def help_handler(
     /img - Generate or edit an image using Gemini
     Usage: `/img [description]` for generating a new image
     Or reply to an image with `/img [description]` to edit that image
+
+    /image - Generate or edit an image with resolution and aspect ratio choices
+    Usage: `/image [description]` and pick resolution (2K/4K/1K) and aspect ratio
 
     /vid - Generate a video
     Usage: `/vid [text prompt]` (optionally reply to an image)

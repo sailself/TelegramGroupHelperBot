@@ -8,7 +8,7 @@ A Telegram bot for group chats that provides summarization, fact-checking, and q
 - **Fact Checking**: Fact-check messages by replying with `/factcheck`
 - **Multi-Model Question Answering**: Ask questions with `/q <your question>` and choose from multiple AI models (Gemini 3 ✨, Llama 4, Qwen 3, DeepSeek 3.1) via interactive buttons
 - **Smart Model Selection**: Automatic filtering to show only media-capable models (Gemini, Llama) when images, videos, or audio are present
-- **Image Generation**: Generate images with `/img <description>`. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
+- **Image Generation**: Generate images with `/img <description>` or use `/image <description>` to pick resolution (2K/4K/1K) and aspect ratio. Uses Gemini by default, or Vertex AI if configured (can return multiple images). Generated images are automatically uploaded to CWD.PW for external hosting with AI generation metadata (model and prompt information).
 - **Video Generation**: Generates a video based on a text prompt and/or a replied-to image with `/vid <prompt>`.
 - **Image Understanding**: Analyze and understand images when replying to a photo with `/factcheck` or `/q`
 - **Google Search Grounding**: All responses are grounded in current information from Google Search
