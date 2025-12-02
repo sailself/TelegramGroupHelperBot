@@ -918,6 +918,7 @@ async def generate_image_with_gemini(
                     response_modalities=["TEXT", "IMAGE"],
                     max_output_tokens=65535,
                     safety_settings=_safety_settings,
+                    tools=[{"google_search": {}}],
                     image_config=image_config,
                 )
 
@@ -967,6 +968,7 @@ async def generate_image_with_gemini(
                 response_modalities=["TEXT", "IMAGE"],
                 max_output_tokens=65535,
                 safety_settings=_safety_settings,
+                tools=[{"google_search": {}}],
                 image_config=image_config,
             )
 
