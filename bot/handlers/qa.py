@@ -76,6 +76,11 @@ OPENROUTER_ALIAS_TO_MODEL = {
 }
 
 
+def _is_gemini_callable(call_model: object) -> bool:
+    """Return True if the provided callable ultimately routes to call_gemini."""
+    return call_model is call_gemini or getattr(call_model, "func", None) is call_gemini
+
+
 def resolve_alias_to_model_id(alias: str) -> str | None:
     """Map a legacy alias to a configured OpenRouter model identifier."""
     alias_lower = alias.strip().lower()
@@ -408,7 +413,7 @@ async def process_q_request_with_specific_model(
                 resp_text = response if isinstance(response, str) else response.get("final", "")
             
             model_label = model_name
-            if call_model is call_gemini:
+            if _is_gemini_callable(call_model):
                 model_label = model_label or gemini_model_used
             if model_label:
                 resp_text = f"{resp_text}\n\n_Model: {model_label}_"
@@ -930,6 +935,19 @@ async def q_handler(
             complete_command_timer(command_timer, status="success")
 
 
+async def qq_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:  # noqa: ARG001
+    """Handle the /qq (quick question) command using Gemini with low thinking level."""
+    gemini_low_thinking = partial(call_gemini, thinking_level="low")
+    await q_handler(
+        update,
+        context,
+        call_model=gemini_low_thinking,
+        model_name=f"{GEMINI_MODEL} (low thinking)",
+    )
+
+
 async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle model selection callback from inline keyboard."""
     query = update.callback_query
@@ -1249,7 +1267,7 @@ async def handle_model_timeout(request_key: str, bot) -> None:
                 )
 
             model_label = model_name
-            if call_model is call_gemini:
+            if _is_gemini_callable(call_model):
                 model_label = model_label or gemini_model_used
             if model_label:
                 resp_text = f"{resp_text}\n\n_Model: {model_label}_"

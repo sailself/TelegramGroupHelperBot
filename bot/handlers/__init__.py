@@ -73,6 +73,7 @@ from .qa import (
     process_q_request_with_gemini,
     process_q_request_with_specific_model,
     q_handler,
+    qq_handler,
     start_periodic_cleanup,
     stop_periodic_cleanup,
 )
@@ -127,6 +128,7 @@ __all__ = [
     'process_q_request_with_specific_model',
     'profileme_handler',
     'q_handler',
+    'qq_handler',
     'queue_message_insert',
     'requires_access_control',
     'select_messages_by_user',

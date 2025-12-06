@@ -6,7 +6,7 @@ import base64
 import logging
 import re
 from io import BytesIO
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from google.genai import types
 from PIL import Image
@@ -17,6 +17,7 @@ from bot.config import (
     GEMINI_MAX_OUTPUT_TOKENS,
     GEMINI_MODEL,
     GEMINI_PRO_MODEL,
+    GEMINI_THINKING_LEVEL,
     GEMINI_TEMPERATURE,
     GEMINI_TOP_K,
     GEMINI_TOP_P,
@@ -39,6 +40,38 @@ _safety_settings = [
     {"category": "HARM_CATEGORY_CIVIC_INTEGRITY", "threshold": "OFF"},
 ]
 
+
+def _build_thinking_config(
+    thinking_level: Optional[str],
+) -> Optional[types.ThinkingConfig]:
+    """Build a thinking configuration object from a user-provided level."""
+    if not thinking_level:
+        return None
+    normalized = thinking_level.strip()
+    if not normalized:
+        return None
+    try:
+        level_enum = types.ThinkingLevel(normalized)
+    except ValueError:
+        logger.warning(
+            "Invalid thinking level '%s'; skipping thinking configuration",
+            thinking_level,
+        )
+        return None
+    return types.ThinkingConfig(thinking_level=level_enum)
+
+
+def _apply_thinking_config(
+    config: dict[str, Any], thinking_level: Optional[str]
+) -> Optional[str]:
+    """Add thinking configuration to the request config if valid."""
+    thinking_config = _build_thinking_config(thinking_level)
+    if not thinking_config:
+        return None
+    config["thinking_config"] = thinking_config
+    return str(thinking_config.thinking_level.value)
+
+
 logger.info("Using Gemini model: %s", GEMINI_MODEL)
 logger.info("Using Gemini Pro model: %s", GEMINI_PRO_MODEL)
 logger.info("Using Image model: %s & %s", GEMINI_IMAGE_MODEL, VERTEX_IMAGE_MODEL)
@@ -54,6 +87,7 @@ async def call_gemini(
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
     use_url_context: bool = False,
+    thinking_level: Optional[str] = GEMINI_THINKING_LEVEL,
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
     image_data_list: Optional[List[bytes]] = None,
@@ -71,6 +105,7 @@ async def call_gemini(
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
         use_url_context: Whether to use URL Context.
+        thinking_level: The thinking level to request from Gemini.
         image_url: Optional URL to an image to include in the query.
         use_pro_model: Whether to use Gemini Pro model.
         image_data_list: Optional list of image data as bytes.
@@ -105,6 +140,7 @@ async def call_gemini(
                 use_search_grounding=use_search_grounding,
                 use_url_context=use_url_context,
                 response_language=response_language,
+                thinking_level=thinking_level,
                 use_pro_model=use_pro_model,
             )
         elif audio_data and audio_mime_type:
@@ -119,6 +155,7 @@ async def call_gemini(
                 use_search_grounding=use_search_grounding,
                 use_url_context=use_url_context,
                 response_language=response_language,
+                thinking_level=thinking_level,
                 use_pro_model=use_pro_model,
             )
         elif image_data_list:
@@ -130,6 +167,7 @@ async def call_gemini(
                 use_search_grounding=use_search_grounding,
                 use_url_context=use_url_context,
                 response_language=response_language,
+                thinking_level=thinking_level,
                 use_pro_model=use_pro_model,
             )
         elif image_url:
@@ -149,6 +187,7 @@ async def call_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
+                    thinking_level=thinking_level,
                     use_pro_model=use_pro_model,
                 )
         elif youtube_urls and len(youtube_urls) > 0:
@@ -160,6 +199,7 @@ async def call_gemini(
                 use_search_grounding=use_search_grounding,
                 use_url_context=use_url_context,
                 response_language=response_language,
+                thinking_level=thinking_level,
                 use_pro_model=use_pro_model,
             )
 
@@ -172,6 +212,10 @@ async def call_gemini(
             "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
             "safety_settings": _safety_settings,
         }
+
+        applied_thinking_level = _apply_thinking_config(config, thinking_level)
+        if applied_thinking_level:
+            logger.info("Using thinking level: %s", applied_thinking_level)
 
         # Add search tool if enabled
         # Build the tools list based on enabled features
@@ -207,6 +251,7 @@ async def call_gemini(
                 "response_language": response_language,
                 "has_media": False,
                 "youtube_urls": len(youtube_urls or []),
+                "thinking_level": applied_thinking_level,
             },
         )
 
@@ -231,6 +276,7 @@ async def call_gemini(
                 response_language=response_language,
                 use_search_grounding=False,
                 use_url_context=use_url_context,
+                thinking_level=thinking_level,
                 use_pro_model=use_pro_model,  # Retain pro_model choice and Ensure no media in fallback
             )
         elif use_search_grounding and (video_data or image_data_list or image_url):
@@ -247,8 +293,9 @@ async def call_gemini_with_media(
     user_content: str,
     image_data_list: Optional[List[bytes]] = None,
     use_search_grounding: bool = True,
-    use_url_context: bool = True,
+    use_url_context: bool = False,
     response_language: Optional[str] = None,
+    thinking_level: Optional[str] = GEMINI_THINKING_LEVEL,
     use_pro_model: bool = False,
     video_data: Optional[bytes] = None,
     video_mime_type: Optional[str] = None,
@@ -265,6 +312,7 @@ async def call_gemini_with_media(
         use_search_grounding: Whether to use Google Search Grounding.
         use_url_context: Whether to use URL Context.
         response_language: The language to respond in, if specified.
+        thinking_level: The thinking level to request from Gemini.
         use_pro_model: Whether to use Gemini Pro model.
         video_data: Optional video data as bytes.
         video_mime_type: Optional MIME type for the video data.
@@ -287,6 +335,10 @@ async def call_gemini_with_media(
             "max_output_tokens": GEMINI_MAX_OUTPUT_TOKENS,
             "safety_settings": _safety_settings,
         }
+
+        applied_thinking_level = _apply_thinking_config(config, thinking_level)
+        if applied_thinking_level:
+            logger.info("Using thinking level: %s", applied_thinking_level)
 
         # Add search tool if enabled
         tools = []
@@ -363,6 +415,7 @@ async def call_gemini_with_media(
                 "has_video": video_data is not None,
                 "has_audio": audio_data is not None,
                 "youtube_urls": len(youtube_urls or []),
+                "thinking_level": applied_thinking_level,
             },
         )
 
@@ -579,7 +632,8 @@ async def stream_gemini(
     user_content: str,
     response_language: Optional[str] = None,
     use_search_grounding: bool = True,
-    use_url_context: bool = True,
+    use_url_context: bool = False,
+    thinking_level: Optional[str] = GEMINI_THINKING_LEVEL,
     image_url: Optional[str] = None,
     use_pro_model: bool = False,
     image_data_list: Optional[List[bytes]] = None,
@@ -598,6 +652,7 @@ async def stream_gemini(
         response_language: The language to respond in, if specified.
         use_search_grounding: Whether to use Google Search Grounding.
         use_url_context: Whether to use URL Context.
+        thinking_level: The thinking level to request from Gemini.
         image_url: Optional URL to an image to include in the query.
         use_pro_model: Whether to use Gemini Pro model.
         image_data_list: Optional list of image data as bytes.
@@ -628,6 +683,7 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
+                    thinking_level=thinking_level,
                     use_pro_model=use_pro_model,
                 )
             elif image_data_list:
@@ -643,6 +699,7 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
+                    thinking_level=thinking_level,
                     use_pro_model=use_pro_model,
                 )
             elif image_url:
@@ -661,6 +718,7 @@ async def stream_gemini(
                     image_data_list=None,
                     video_data=None,
                     video_mime_type=None,
+                    thinking_level=thinking_level,
                     youtube_urls=youtube_urls,
                 )
             elif youtube_urls and len(youtube_urls) > 0:
@@ -671,6 +729,7 @@ async def stream_gemini(
                     use_search_grounding=use_search_grounding,
                     use_url_context=use_url_context,
                     response_language=response_language,
+                    thinking_level=thinking_level,
                     use_pro_model=use_pro_model,
                 )
             else:  # Should ideally not be reached if the outer 'if' is true.
@@ -718,6 +777,12 @@ async def stream_gemini(
                 "safety_settings": _safety_settings,
             }
 
+            applied_thinking_level = _apply_thinking_config(
+                config, thinking_level
+            )
+            if applied_thinking_level:
+                logger.info("Stream - Using thinking level: %s", applied_thinking_level)
+
             # Add search tool if enabled
             # Refactored tool selection logic
             tools = []
@@ -750,6 +815,7 @@ async def stream_gemini(
                     "url_context": use_url_context,
                     "response_language": response_language,
                     "stream": True,
+                    "thinking_level": applied_thinking_level,
                 },
             )
 

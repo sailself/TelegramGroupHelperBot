@@ -32,6 +32,7 @@ from bot.handlers import (
     paintme_handler,
     profileme_handler,
     q_handler,
+    qq_handler,
     start_handler,
     support_handler,
     tldr_handler,
@@ -108,6 +109,7 @@ def main():
         )
     )
     application.add_handler(CommandHandler("q", q_handler, filters=COMMAND_UPDATE_FILTER))
+    application.add_handler(CommandHandler("qq", qq_handler, filters=COMMAND_UPDATE_FILTER))
     application.add_handler(
         CommandHandler(
             "img",
