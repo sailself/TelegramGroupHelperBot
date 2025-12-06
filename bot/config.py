@@ -374,7 +374,7 @@ Guidelines for your responses:
 10. If the answer requires multiple parts, use numbered or bulleted lists.
 11. CRITICAL: Respond in {language} language unless you are told otherwise.
 
-Remember to be helpful, accurate, and respectful in your responses.
+Remember to be helpful and accurate in your responses. But do not be too nice and agreeable. If necessary, do not be afraid to be critical.
 """
 
 # Prompt for the /profileme handler
@@ -397,7 +397,7 @@ PAINTME_SYSTEM_PROMPT = (
     "Focus on symbolism, artistic interpretation, and sensory details. Do not refer to the user directly or mention the chat itself in the prompt. "
     "The final prompt should be a descriptive phrase or a short paragraph. "
     "Strive for prompts that can lead to realistic, artistic, or conceptually rich images. \n\n"
-    "The prompt is used for Imagen 4 model, so the prompt should be in English."
+    "The prompt is used for Gemini image model, so the prompt should be in English."
 )
 
 PORTRAIT_SYSTEM_PROMPT = (
@@ -408,5 +408,5 @@ PORTRAIT_SYSTEM_PROMPT = (
     "to create a visual representation of the user themselves. Focus on artistic interpretation and sensory details to produce a compelling image. "
     "Do not refer to the user by a name or mention the chat itself in the prompt. The final prompt should be a descriptive phrase or a short paragraph."
     "The portrait should be a realistic portrait of the user, not a cartoon or a stylized portrait."
-    "The prompt is used for Imagen 4 model, so the prompt should be in English."
+    "The prompt is used for Gemini image model, so the prompt should be in English."
 )

@@ -17,6 +17,7 @@ Guide for autonomous contributors working inside `TelegramGroupHelperBot`. Keep 
 - **bot/config.py**
   - Loads `.env`, creates `logs/bot.log` via `TimedRotatingFileHandler`, and sets console logging.
 - Defines all env-driven toggles (Gemini, Vertex, OpenRouter, Exa, Jina, CWD.PW, whitelist, webhook/polling, support copy) and prompt templates (`TLDR_SYSTEM_PROMPT` etc. - leave as-is even if they look garbled).
+  - Gemini thinking level is configurable via `GEMINI_THINKING_LEVEL` (default `high`); URL Context is available but off by default—enable per call when needed.
   - `OpenRouterModelConfig` plus helpers `iter_openrouter_models`, `get_openrouter_model_config`, `_resolve_model_by_keyword` to wire JSON/env model configs.
 - **bot/main.py**
   - Builds the Telegram `Application`, registers every command and callback, attaches message logging, runs `init_db_wrapper()` (init DB + load whitelist), and starts webhook/polling. Uses `close_http_session` on shutdown.
@@ -37,7 +38,7 @@ Guide for autonomous contributors working inside `TelegramGroupHelperBot`. Keep 
 - **bot/handlers/content.py**
 - Markdown/HTML -> Telegraph nodes, `create_telegraph_page`, YouTube URL extraction, Telegraph/Twitter content expansion with media download helpers (`download_telegraph_media`, `download_twitter_media`). Strict Twitter/X host allowlist.
 - **bot/handlers/commands.py**
-  - Implements `/tldr`, `/factcheck`, `/img`, `/vid`, `/paintme` `/portraitme`, `/profileme`, `/start`, `/help`, `/support`, plus media-group caching.
+  - Implements `/tldr`, `/factcheck`, `/img`, `/vid`, `/paintme` `/portraitme`, `/profileme`, `/qq` (Gemini quick question: low thinking level, no model selection), `/start`, `/help`, `/support`, plus media-group caching.
 - Pattern: access check -> rate limit -> "processing..." reply -> gather context/media (including Telegraph/Twitter extraction) -> call LLM/media helpers -> respond via `send_response` or direct media send. Logs errors with `exc_info`.
 - **bot/handlers/qa.py**
   - `/q` flow and model-selection callbacks; alias resolution for OpenRouter models vs Gemini; capability filtering for media; pending request registry with timeouts (`handle_model_timeout`, `cleanup_expired_requests`, `periodic_cleanup_task`).
@@ -77,6 +78,7 @@ Guide for autonomous contributors working inside `TelegramGroupHelperBot`. Keep 
 - LLM usage:
   - Prefer `call_gemini`; set `use_pro_model` when media is present. Pass `youtube_urls`, `image_data_list`, `video_data`, or `audio_data` instead of embedding URLs to keep capability filtering accurate.
   - Use `call_openrouter` only for configured models; provide `supports_tools=False` for models lacking tool support. Keep Exa search enabled via config when expecting tool calls.
+  - Thinking level: `GEMINI_THINKING_LEVEL` defaults to `high`; commands can override (e.g., `/qq` forces `low`). URL Context is opt-in (`use_url_context=False` by default)—enable only when link context is desired.
 - Media/content handling: use helpers in `content.py` and `media.py`; respect host allowlists; observe `max_images`/`max_videos` defaults in download helpers; prefer `download_media` instead of new fetchers.
 - Error handling: wrap risky sections with broad `except Exception as exc` and log `exc_info=True`; present user-friendly messages without leaking secrets. `send_response` already handles Telegram length errors via Telegraph or truncation.
 - Prompts/config: prompt constants (e.g., `TLDR_SYSTEM_PROMPT`) include non-ASCII artifacts - do not "clean" them. Keep env defaults centralized in `config.py`.

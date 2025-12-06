@@ -51,13 +51,21 @@ def _build_thinking_config(
     if not normalized:
         return None
     try:
-        level_enum = types.ThinkingLevel(normalized)
-    except ValueError:
-        logger.warning(
-            "Invalid thinking level '%s'; skipping thinking configuration",
-            thinking_level,
-        )
-        return None
+        # Normalize to uppercase to match enum member names (HIGH, LOW, etc.)
+        normalized_upper = normalized.upper()
+        # Try accessing by name first (enum members are typically uppercase)
+        level_enum = types.ThinkingLevel[normalized_upper]
+    except (KeyError, TypeError, ValueError):
+        # Fallback: try by value in case the enum uses lowercase values
+        try:
+            level_enum = types.ThinkingLevel(normalized)
+        except (ValueError, TypeError) as e:
+            logger.warning(
+                "Invalid thinking level '%s'; skipping thinking configuration. Error: %s",
+                thinking_level,
+                e,
+            )
+            return None
     return types.ThinkingConfig(thinking_level=level_enum)
 
 
