@@ -938,13 +938,12 @@ async def q_handler(
 async def qq_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
 ) -> None:  # noqa: ARG001
-    """Handle the /qq (quick question) command using Gemini with low thinking level."""
-    gemini_low_thinking = partial(call_gemini, thinking_level="low")
+    """Handle the /qq (quick question) command using the default Gemini model."""
     await q_handler(
         update,
         context,
-        call_model=gemini_low_thinking,
-        model_name=f"{GEMINI_MODEL} (low thinking)",
+        call_model=call_gemini,
+        model_name=GEMINI_MODEL,
     )
 
 
@@ -1091,9 +1090,14 @@ async def model_selection_callback(update: Update, context: ContextTypes.DEFAULT
                 resp_text += f"*Final answer*\n{final}"
             else:
                 resp_text = response if isinstance(response, str) else response.get("final", "")
-            
-            if model_name:
-                resp_text = f"{resp_text}\n\n_Model: {model_name}_"
+
+            model_label = model_name
+            if _is_gemini_callable(call_model):
+                model_label = model_label or (
+                    GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
+                )
+            if model_label:
+                resp_text = f"{resp_text}\n\n_Model: {model_label}_"
             
             # Send response using the processing message
             await send_response(

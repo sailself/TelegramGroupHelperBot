@@ -1807,7 +1807,7 @@ async def help_handler(
     /q - Ask a question
     Usage: `/q [your question]`
 
-    /qq - Quick Gemini answer with low thinking effort
+    /qq - Quick Gemini answer using the default Gemini model
     Usage: `/qq [your quick question]`
 
     /img - Generate or edit an image using Gemini

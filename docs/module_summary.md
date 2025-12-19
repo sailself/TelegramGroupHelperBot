@@ -121,7 +121,7 @@ Comprehensive reference for the Python modules in this repository. Each entry li
 - `process_q_request_with_gemini(request_data)`: Handles the full `/q` flow for Gemini-only cases, including history threading, media extraction, language detection, and invoking `call_gemini`.
 - `process_q_request_with_specific_model(request_data, call_model, model_name)`: Shared worker for any OpenRouter model selection result.
 - `q_handler(update, context, call_model, model_name)`: Entry point for `/q` (and alias commands) that enforces access control, collects context (e.g., replied-to messages, attachments), schedules timeouts, and sends the model-selection keyboard.
-- `qq_handler(update, context)`: Shortcut for `/qq` that reuses `q_handler` but forces Gemini with a low thinking level and skips model selection.
+- `qq_handler(update, context)`: Shortcut for `/qq` that reuses `q_handler`, forces the default Gemini model, and skips model selection.
 - `model_selection_callback(update, context)`: Processes button presses, dispatching to the appropriate Gemini/OpenRouter handler and ensuring duplicate presses are ignored.
 - `get_model_display_name(model_key)`: Pretty name for inline buttons.
 - `get_model_function_and_name(model_key)`: Maps a button press back to the callable (Gemini vs. OpenRouter).
