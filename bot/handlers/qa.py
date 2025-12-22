@@ -201,6 +201,7 @@ async def process_q_request_with_gemini(
     audio_data: Optional[bytes],
     audio_mime_type: Optional[str],
     youtube_urls: Optional[List[str]],
+    force_gemini_model: bool = False,
     command_timer: Optional[CommandTimer] = None,
 ) -> None:
     """Process Q request directly with Gemini (original behavior when OpenRouter is disabled)."""
@@ -261,6 +262,8 @@ async def process_q_request_with_gemini(
         use_pro_model = bool(
             video_data or image_data_list or audio_data or youtube_urls
         )
+        if force_gemini_model:
+            use_pro_model = False
         model_used = GEMINI_PRO_MODEL if use_pro_model else GEMINI_MODEL
 
         # Call Gemini
@@ -370,9 +373,14 @@ async def process_q_request_with_specific_model(
         )
         
         # Determine if pro model should be used
-        supports_video = model_name == LLAMA_MODEL or model_name is None
-        supports_audio = supports_video
-        supports_images = supports_video or model_name == GROK_MODEL
+        capability_key = MODEL_GEMINI if _is_gemini_callable(call_model) else model_name
+        if capability_key:
+            capabilities = get_model_capabilities(capability_key)
+        else:
+            capabilities = {"images": False, "video": False, "audio": False}
+        supports_images = capabilities.get("images", False)
+        supports_video = capabilities.get("video", False)
+        supports_audio = capabilities.get("audio", False)
 
         temp_image_data_list = image_data_list if supports_images else None
         temp_video_data = video_data if supports_video else None
@@ -445,6 +453,7 @@ async def q_handler(
     *,
     call_model=None,
     model_name: Optional[str] = None,
+    force_gemini_model: bool = False,
 ) -> None:
     """Handle the /q command.
 
@@ -766,19 +775,44 @@ async def q_handler(
             
             # Process directly with specified model or Gemini
             if call_model is not None:
-                await process_q_request_with_specific_model(
-                    update, processing_message, query, original_query, 
-                    image_data_list, video_data, video_mime_type,
-                    audio_data, audio_mime_type, youtube_urls,
-                    call_model, model_name,
-                    command_timer=command_timer,
-                )
+                if _is_gemini_callable(call_model):
+                    await process_q_request_with_gemini(
+                        update,
+                        processing_message,
+                        query,
+                        original_query,
+                        image_data_list,
+                        video_data,
+                        video_mime_type,
+                        audio_data,
+                        audio_mime_type,
+                        youtube_urls,
+                        force_gemini_model=force_gemini_model,
+                        command_timer=command_timer,
+                    )
+                else:
+                    await process_q_request_with_specific_model(
+                        update,
+                        processing_message,
+                        query,
+                        original_query,
+                        image_data_list,
+                        video_data,
+                        video_mime_type,
+                        audio_data,
+                        audio_mime_type,
+                        youtube_urls,
+                        call_model,
+                        model_name,
+                        command_timer=command_timer,
+                    )
             else:
                 # OpenRouter not available, use Gemini
                 await process_q_request_with_gemini(
                     update, processing_message, query, original_query, 
                     image_data_list, video_data, video_mime_type,
                     audio_data, audio_mime_type, youtube_urls,
+                    force_gemini_model=force_gemini_model,
                     command_timer=command_timer,
                 )
             return
@@ -805,6 +839,7 @@ async def q_handler(
                 audio_data,
                 audio_mime_type,
                 youtube_urls,
+                force_gemini_model=force_gemini_model,
                 command_timer=command_timer,
             )
             return
@@ -944,6 +979,7 @@ async def qq_handler(
         context,
         call_model=call_gemini,
         model_name=GEMINI_MODEL,
+        force_gemini_model=True,
     )
 
 
