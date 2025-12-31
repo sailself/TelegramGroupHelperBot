@@ -55,29 +55,56 @@ async def download_media(media_url: str) -> Optional[bytes]:
         The media data as bytes, or None if the download failed.
     """
     session = await get_http_session()
-    try:
-        async with session.get(media_url) as response:
-            if response.status == 200:
-                return await response.read()
-            logger.error(
-                "Failed to download media: %s from %s",
-                response.status,
+    retries = 2
+    delay = 1.5
+    retry_statuses = {408, 429, 500, 502, 503, 504}
+
+    for attempt in range(1, retries + 2):
+        try:
+            async with session.get(media_url) as response:
+                if response.status == 200:
+                    return await response.read()
+                if response.status in retry_statuses and attempt <= retries:
+                    logger.warning(
+                        "Retrying media download (%d/%d) for %s due to status %s",
+                        attempt,
+                        retries + 1,
+                        media_url,
+                        response.status,
+                    )
+                    await asyncio.sleep(delay)
+                    delay *= 2
+                    continue
+                logger.error(
+                    "Failed to download media: %s from %s",
+                    response.status,
+                    media_url,
+                )
+                return None
+        except (asyncio.TimeoutError, ClientError, OSError) as exc:
+            if attempt > retries:
+                logger.error(
+                    "HTTP error downloading media from %s: %s",
+                    media_url,
+                    exc,
+                    exc_info=True,
+                )
+                return None
+            logger.warning(
+                "Retrying media download (%d/%d) for %s due to error: %s",
+                attempt,
+                retries + 1,
                 media_url,
+                exc,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "Unexpected error downloading media from %s: %s",
+                media_url,
+                exc,
+                exc_info=True,
             )
             return None
-    except asyncio.TimeoutError as exc:
-        logger.error("Timeout downloading media from %s: %s", media_url, exc)
-        return None
-    except ClientError as exc:
-        logger.error(
-            "HTTP error downloading media from %s: %s", media_url, exc, exc_info=True
-        )
-        return None
-    except Exception as exc:  # noqa: BLE001
-        logger.error(
-            "Unexpected error downloading media from %s: %s",
-            media_url,
-            exc,
-            exc_info=True,
-        )
-        return None
+    return None

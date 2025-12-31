@@ -6,13 +6,13 @@ import logging
 import time
 from datetime import datetime
 from functools import partial
-from typing import Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import langid
 from pycountry import languages
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import File, InlineKeyboardButton, InlineKeyboardMarkup, Message, Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import ContextTypes
 
 from bot.config import (
@@ -55,6 +55,8 @@ logger = logging.getLogger(__name__)
 MODEL_CALLBACK_PREFIX = "model_select:"
 MODEL_GEMINI = "gemini"
 
+T = TypeVar("T")
+
 LEGACY_ALIAS_DISPLAY_NAMES = {
     "llama": "Llama 4",
     "grok": "Grok 4",
@@ -79,6 +81,69 @@ OPENROUTER_ALIAS_TO_MODEL = {
 def _is_gemini_callable(call_model: object) -> bool:
     """Return True if the provided callable ultimately routes to call_gemini."""
     return call_model is call_gemini or getattr(call_model, "func", None) is call_gemini
+
+
+async def _retry_telegram_call(
+    action_name: str,
+    action: Callable[[], Awaitable[T]],
+    *,
+    retries: int = 2,
+    base_delay: float = 1.5,
+) -> T:
+    delay = base_delay
+    max_attempts = retries + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await action()
+        except RetryAfter as exc:
+            wait_time = max(exc.retry_after, delay)
+            logger.warning(
+                "%s hit retry_after=%s; retrying in %.1fs (attempt %d/%d)",
+                action_name,
+                exc.retry_after,
+                wait_time,
+                attempt,
+                max_attempts,
+            )
+            await asyncio.sleep(wait_time)
+        except (TimedOut, NetworkError) as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "%s network error on attempt %d/%d: %s",
+                action_name,
+                attempt,
+                max_attempts,
+                exc,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+    raise RuntimeError(f"{action_name} retry loop exhausted")
+
+
+async def _get_telegram_file(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> File:
+    async def _fetch_file() -> File:
+        return await context.bot.get_file(file_id)
+
+    return await _retry_telegram_call("get_file", _fetch_file)
+
+
+async def _reply_text_with_retry(
+    message: Message, text: str, **kwargs: Any
+) -> Message:
+    async def _send() -> Message:
+        return await message.reply_text(text, **kwargs)
+
+    return await _retry_telegram_call("reply_text", _send)
+
+
+async def _edit_text_with_retry(
+    message: Message, text: str, **kwargs: Any
+) -> Message:
+    async def _edit() -> Message:
+        return await message.edit_text(text, **kwargs)
+
+    return await _retry_telegram_call("edit_text", _edit)
 
 
 def resolve_alias_to_model_id(alias: str) -> str | None:
@@ -289,7 +354,8 @@ async def process_q_request_with_gemini(
                 ParseMode.MARKDOWN,
             )
         else:
-            await processing_message.edit_text(
+            await _edit_text_with_retry(
+                processing_message,
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
             )
         complete_command_timer(command_timer, status="success")
@@ -298,7 +364,9 @@ async def process_q_request_with_gemini(
         logger.error("Error in process_q_request_with_gemini: %s", e, exc_info=True)
         complete_command_timer(command_timer, status="error", detail=str(e))
         try:
-            await processing_message.edit_text(f"Error processing your question: {str(e)}")
+            await _edit_text_with_retry(
+                processing_message, f"Error processing your question: {str(e)}"
+            )
         except Exception:
             pass
 
@@ -433,7 +501,8 @@ async def process_q_request_with_specific_model(
                 ParseMode.MARKDOWN,
             )
         else:
-            await processing_message.edit_text(
+            await _edit_text_with_retry(
+                processing_message,
                 "I couldn't find an answer to your question. Please try rephrasing or asking something else.",
             )
         complete_command_timer(command_timer, status="success")
@@ -442,7 +511,9 @@ async def process_q_request_with_specific_model(
         logger.error("Error in process_q_request_with_specific_model: %s", e, exc_info=True)
         complete_command_timer(command_timer, status="error", detail=str(e))
         try:
-            await processing_message.edit_text(f"Error processing your question: {str(e)}")
+            await _edit_text_with_retry(
+                processing_message, f"Error processing your question: {str(e)}"
+            )
         except Exception:
             pass
 
@@ -476,8 +547,8 @@ async def q_handler(
         return
 
     if is_rate_limited(update.effective_message.from_user.id):
-        await update.effective_message.reply_text(
-            "Rate limit exceeded. Please try again later."
+        await _reply_text_with_retry(
+            update.effective_message, "Rate limit exceeded. Please try again later."
         )
         complete_command_timer(command_timer, status="rate_limited")
         return
@@ -548,7 +619,8 @@ async def q_handler(
                     target_message_for_media.video.file_id,
                 )
                 try:
-                    video_file = await context.bot.get_file(
+                    video_file = await _get_telegram_file(
+                        context,
                         target_message_for_media.video.file_id
                     )
                     dl_video_data = await download_media(video_file.file_path)
@@ -579,7 +651,7 @@ async def q_handler(
                 if audio:
                     logger.info("Q handler processing audio: %s", audio.file_id)
                     try:
-                        audio_file = await context.bot.get_file(audio.file_id)
+                        audio_file = await _get_telegram_file(context, audio.file_id)
                         dl_audio_data = await download_media(audio_file.file_path)
                         if dl_audio_data:
                             audio_data = dl_audio_data
@@ -601,7 +673,8 @@ async def q_handler(
             if not video_data and not audio_data:
                 if target_message_for_media.sticker:
                     try:
-                        sticker_file = await context.bot.get_file(
+                        sticker_file = await _get_telegram_file(
+                            context,
                             target_message_for_media.sticker.file_id
                         )
                         img_bytes = await download_media(sticker_file.file_path)
@@ -636,7 +709,9 @@ async def q_handler(
                         if msg.photo:
                             photo = msg.photo[-1]
                             try:
-                                photo_file = await context.bot.get_file(photo.file_id)
+                                photo_file = await _get_telegram_file(
+                                    context, photo.file_id
+                                )
                                 img_bytes = await download_media(photo_file.file_path)
                                 if img_bytes:
                                     image_data_list.append(img_bytes)
@@ -654,7 +729,7 @@ async def q_handler(
                     # Handle single photo
                     photo_size = target_message_for_media.photo[-1]
                     try:
-                        file = await context.bot.get_file(photo_size.file_id)
+                        file = await _get_telegram_file(context, photo_size.file_id)
                         img_bytes = await download_media(file.file_path)
                         if img_bytes:
                             image_data_list.append(img_bytes)
@@ -670,8 +745,9 @@ async def q_handler(
                         )
 
         if not query and not image_data_list and not video_data and not audio_data:
-            await update.effective_message.reply_text(
-                "Please provide a question, reply to media, or caption media with /q."
+            await _reply_text_with_retry(
+                update.effective_message,
+                "Please provide a question, reply to media, or caption media with /q.",
             )
             return
 
@@ -769,8 +845,8 @@ async def q_handler(
             elif youtube_urls and len(youtube_urls) > 0:
                 processing_message_text = processing_message_text.replace("Processing", f"Analyzing {len(youtube_urls)} YouTube video(s) and processing")
 
-            processing_message = await update.effective_message.reply_text(
-                processing_message_text
+            processing_message = await _reply_text_with_retry(
+                update.effective_message, processing_message_text
             )
             
             # Process directly with specified model or Gemini
@@ -824,8 +900,8 @@ async def q_handler(
             else:
                 processing_message_text = "Analyzing linked YouTube video(s) and processing your question..."
 
-            processing_message = await update.effective_message.reply_text(
-                processing_message_text
+            processing_message = await _reply_text_with_retry(
+                update.effective_message, processing_message_text
             )
 
             await process_q_request_with_gemini(
@@ -864,10 +940,11 @@ async def q_handler(
             selection_text += "\n\n*Note: Only models that support media are shown.*"
         
         # Send model selection message
-        selection_message = await update.effective_message.reply_text(
+        selection_message = await _reply_text_with_retry(
+            update.effective_message,
             selection_text,
             reply_markup=keyboard,
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN,
         )
 
         if not language:
@@ -952,8 +1029,8 @@ async def q_handler(
         logger.error("Error in q_handler: %s", e, exc_info=True)
         complete_command_timer(command_timer, status="error", detail=str(e))
         try:
-            await update.effective_message.reply_text(
-                f"Error processing your question: {str(e)}"
+            await _reply_text_with_retry(
+                update.effective_message, f"Error processing your question: {str(e)}"
             )
         except Exception:  # noqa: BLE001 # Inner exception during error reporting
             pass

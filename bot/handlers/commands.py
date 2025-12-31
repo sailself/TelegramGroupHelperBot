@@ -7,12 +7,13 @@ import re
 from datetime import datetime
 from io import BytesIO
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 import langid
 from pycountry import languages
 from telegram import (
     CallbackQuery,
+    File,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
@@ -20,6 +21,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from telegram.error import NetworkError, RetryAfter, TimedOut
 from telegram.ext import ContextTypes
 
 from bot.config import (
@@ -122,6 +124,79 @@ def _build_image_request_key(chat_id: int, message_id: int) -> str:
     return f"{chat_id}:{message_id}"
 
 
+T = TypeVar("T")
+
+
+async def _retry_telegram_call(
+    action_name: str,
+    action: Callable[[], Awaitable[T]],
+    *,
+    retries: int = 2,
+    base_delay: float = 1.5,
+) -> T:
+    delay = base_delay
+    max_attempts = retries + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await action()
+        except RetryAfter as exc:
+            wait_time = max(exc.retry_after, delay)
+            logger.warning(
+                "%s hit retry_after=%s; retrying in %.1fs (attempt %d/%d)",
+                action_name,
+                exc.retry_after,
+                wait_time,
+                attempt,
+                max_attempts,
+            )
+            await asyncio.sleep(wait_time)
+        except (TimedOut, NetworkError) as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "%s network error on attempt %d/%d: %s",
+                action_name,
+                attempt,
+                max_attempts,
+                exc,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
+    raise RuntimeError(f"{action_name} retry loop exhausted")
+
+
+async def _get_telegram_file(context: ContextTypes.DEFAULT_TYPE, file_id: str) -> File:
+    async def _fetch_file() -> File:
+        return await context.bot.get_file(file_id)
+
+    return await _retry_telegram_call("get_file", _fetch_file)
+
+
+async def _reply_text_with_retry(
+    message: Message, text: str, **kwargs: Any
+) -> Message:
+    async def _send() -> Message:
+        return await message.reply_text(text, **kwargs)
+
+    return await _retry_telegram_call("reply_text", _send)
+
+
+async def _edit_text_with_retry(
+    message: Message, text: str, **kwargs: Any
+) -> Message:
+    async def _edit() -> Message:
+        return await message.edit_text(text, **kwargs)
+
+    return await _retry_telegram_call("edit_text", _edit)
+
+
+async def _delete_message_with_retry(message: Message) -> Any:
+    async def _delete() -> Any:
+        return await message.delete()
+
+    return await _retry_telegram_call("delete_message", _delete)
+
+
 async def prepare_image_request(
     update: Update, context: ContextTypes.DEFAULT_TYPE, command_prefix: str
 ) -> ImageRequestContext:
@@ -145,14 +220,16 @@ async def prepare_image_request(
         for msg in media_messages:
             if msg.photo:
                 photo = msg.photo[-1]
-                photo_file = await context.bot.get_file(photo.file_id)
+                photo_file = await _get_telegram_file(context, photo.file_id)
                 image_urls.append(photo_file.file_path)
     elif update.effective_message.photo:
         photo = update.effective_message.photo[-1]
-        photo_file = await context.bot.get_file(photo.file_id)
+        photo_file = await _get_telegram_file(context, photo.file_id)
         image_urls.append(photo_file.file_path)
     elif update.effective_message.sticker:
-        sticker_file = await context.bot.get_file(update.effective_message.sticker.file_id)
+        sticker_file = await _get_telegram_file(
+            context, update.effective_message.sticker.file_id
+        )
         image_urls.append(sticker_file.file_path)
 
     if not image_urls and update.effective_message.reply_to_message:
@@ -167,14 +244,16 @@ async def prepare_image_request(
             for msg in media_messages:
                 if msg.photo:
                     photo = msg.photo[-1]
-                    photo_file = await context.bot.get_file(photo.file_id)
+                    photo_file = await _get_telegram_file(context, photo.file_id)
                     image_urls.append(photo_file.file_path)
         elif replied_message.photo:
             photo = replied_message.photo[-1]
-            photo_file = await context.bot.get_file(photo.file_id)
+            photo_file = await _get_telegram_file(context, photo.file_id)
             image_urls.append(photo_file.file_path)
         elif replied_message.sticker:
-            sticker_file = await context.bot.get_file(replied_message.sticker.file_id)
+            sticker_file = await _get_telegram_file(
+                context, replied_message.sticker.file_id
+            )
             image_urls.append(sticker_file.file_path)
 
         replied_text_content = replied_message.text or replied_message.caption or ""
@@ -309,8 +388,6 @@ async def run_image_generation(
                                 exc_info=True,
                             )
 
-                    image_io = BytesIO(image_data)
-                    image_io.name = f"{service_name.lower()}_generated_image.jpg"
                     base_caption = f"Generated by *{model_used}*"
                     full_caption = f"{base_caption} with prompt: \n```\n{prompt}\n```"
                     caption_prefix = (
@@ -338,13 +415,18 @@ async def run_image_generation(
                             )
                     caption = f"{caption_prefix}{caption_body}"
 
-                    await processing_message.edit_media(
-                        media=InputMediaPhoto(
-                            media=image_io,
-                            caption=caption,
-                            parse_mode=ParseMode.MARKDOWN,
+                    async def _edit_media() -> Message:
+                        image_io = BytesIO(image_data)
+                        image_io.name = f"{service_name.lower()}_generated_image.jpg"
+                        return await processing_message.edit_media(
+                            media=InputMediaPhoto(
+                                media=image_io,
+                                caption=caption,
+                                parse_mode=ParseMode.MARKDOWN,
+                            )
                         )
-                    )
+
+                    await _retry_telegram_call("edit_media", _edit_media)
                     logger.info(
                         "%s: Image sent successfully by editing processing message with %s.",
                         service_name,
@@ -364,18 +446,20 @@ async def run_image_generation(
                     "%s: Image generation failed (image_data is None).", service_name
                 )
                 if image_urls:
-                    await processing_message.edit_text(
+                    await _edit_text_with_retry(
+                        processing_message,
                         f"I couldn't edit the image with {service_name}. Please try:\n"
                         "1. Simpler edit description\n2. More specific details\n3. Different edit type or try later"
                     )
                 else:
-                    await processing_message.edit_text(
+                    await _edit_text_with_retry(
+                        processing_message,
                         f"I couldn't generate an image with {service_name}. Please try:\n"
                         "1. Simpler prompt\n2. More specific details\n3. Try again later"
                     )
         except ImageGenerationError as e:
             logger.error("ImageGenerationError in img_handler: %s", e)
-            await processing_message.edit_text(f"Image generation failed: {e}")
+            await _edit_text_with_retry(processing_message, f"Image generation failed: {e}")
 
         classified_language = langid.classify(request_context.original_message_text)[0]
         language = languages.get(alpha_2=classified_language).name
@@ -412,7 +496,7 @@ async def run_image_generation(
             "Sorry, an unexpected error occurred while processing your image request."
         )
         try:
-            await processing_message.edit_text(error_message_for_user)
+            await _edit_text_with_retry(processing_message, error_message_for_user)
         except Exception as edit_err:
             logger.error(
                 "Failed to edit processing message with error: %s",
@@ -964,7 +1048,8 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # Check rate limiting
     if is_rate_limited(user_id):
-        await update.effective_message.reply_text(
+        await _reply_text_with_retry(
+            update.effective_message,
             "You're sending commands too quickly. Please wait a moment before trying again."
         )
         return
@@ -973,7 +1058,8 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         request_context = await prepare_image_request(update, context, "/img")
         if not request_context.prompt:
-            await update.effective_message.reply_text(
+            await _reply_text_with_retry(
+                update.effective_message,
                 "Please provide a description of the image you want to generate or edit. "
                 "For example: /img a cat playing piano"
             )
@@ -989,8 +1075,8 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 "processing your image request... This may take a moment."
             )
 
-        processing_message = await update.effective_message.reply_text(
-            processing_message_text
+        processing_message = await _reply_text_with_retry(
+            update.effective_message, processing_message_text
         )
 
         await run_image_generation(
@@ -1003,7 +1089,7 @@ async def img_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         )
         if processing_message:
             try:
-                await processing_message.edit_text(error_message_for_user)
+                await _edit_text_with_retry(processing_message, error_message_for_user)
             except Exception as edit_err:
                 logger.error(
                     "Failed to edit processing message with error: %s",
@@ -1450,30 +1536,35 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 video_mime_type,
                 len(video_bytes),
             )
-            video_file = BytesIO(video_bytes)
-            video_file.name = "generated_video.mp4"  # Suggested name
 
             try:
-                await update.effective_message.reply_video(
-                    video=video_file,
-                    caption="Here's your generated video!",
-                    read_timeout=120,  # Increased timeouts
-                    write_timeout=120,
-                    connect_timeout=60,
-                    pool_timeout=60,
-                )
-                await processing_message.delete()
+                async def _send_video() -> Message:
+                    video_file = BytesIO(video_bytes)
+                    video_file.name = "generated_video.mp4"
+                    return await update.effective_message.reply_video(
+                        video=video_file,
+                        caption="Here's your generated video!",
+                        read_timeout=120,  # Increased timeouts
+                        write_timeout=120,
+                        connect_timeout=60,
+                        pool_timeout=60,
+                    )
+
+                await _retry_telegram_call("reply_video", _send_video)
+                await _delete_message_with_retry(processing_message)
                 logger.info("Video sent successfully and processing message deleted.")
             except Exception as e_telegram:
                 logger.error(
                     "Error sending video via Telegram: %s", e_telegram, exc_info=True
                 )
-                await processing_message.edit_text(
+                await _edit_text_with_retry(
+                    processing_message,
                     "Sorry, I generated the video but couldn't send it via Telegram. It might be too large or in an unsupported format."
                 )
         else:
             logger.warning("Video generation failed (video_bytes is None).")
-            await processing_message.edit_text(
+            await _edit_text_with_retry(
+                processing_message,
                 "Sorry, I couldn't generate the video. Please try a different prompt or image. The model might have limitations or be unavailable."
             )
 
@@ -1485,7 +1576,7 @@ async def vid_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         elif "unsupported" in str(e).lower():
             error_message_user = "The video generation failed due to an unsupported format or feature. Please check your input."
         try:
-            await processing_message.edit_text(error_message_user)
+            await _edit_text_with_retry(processing_message, error_message_user)
         except Exception:  # noqa: BLE001 # If editing fails, just log
             logger.error("Failed to edit processing message with error.", exc_info=True)
 
@@ -1573,7 +1664,8 @@ async def paintme_handler(
         )
 
         if not user_messages or len(user_messages) < 5:  # Need a few messages at least
-            await processing_message.edit_text(
+            await _edit_text_with_retry(
+                processing_message,
                 f"I don't have enough of your messages (at least 5 recent ones) in this chat to {reply_text_part}. Keep chatting!"
             )
             return
@@ -1591,12 +1683,14 @@ async def paintme_handler(
         )
 
         if not image_prompt or "No response generated" in image_prompt:
-            await processing_message.edit_text(
+            await _edit_text_with_retry(
+                processing_message,
                 "I couldn't come up with an image idea for you at this time. Please try again later."
             )
             return
 
-        await processing_message.edit_text(
+        await _edit_text_with_retry(
+            processing_message,
             f'Generated image prompt: "{image_prompt}". Now creating your masterpiece...'
         )
 
@@ -1611,18 +1705,25 @@ async def paintme_handler(
 
             if images_data_list and images_data_list[0]:
                 image_data = images_data_list[0]
-                image_io = BytesIO(image_data)
-                image_io.name = "vertex_paintme_image.jpg"
-                await update.effective_message.reply_photo(
-                    photo=image_io,
-                    caption=f'Here\'s your artistic representation!\nPrompt: "{image_prompt}"\nModel: {VERTEX_IMAGE_MODEL}',
-                )
-                await processing_message.delete()
+                async def _send_paintme_vertex() -> Message:
+                    image_io = BytesIO(image_data)
+                    image_io.name = "vertex_paintme_image.jpg"
+                    return await update.effective_message.reply_photo(
+                        photo=image_io,
+                        caption=(
+                            "Here's your artistic representation!\n"
+                            f'Prompt: "{image_prompt}"\nModel: {VERTEX_IMAGE_MODEL}'
+                        ),
+                    )
+
+                await _retry_telegram_call("reply_photo", _send_paintme_vertex)
+                await _delete_message_with_retry(processing_message)
             else:
                 logger.error(
                     "{'portrait' if isPortrait else 'paint'}me_handler: Vertex AI image generation failed or returned no image."
                 )
-                await processing_message.edit_text(
+                await _edit_text_with_retry(
+                    processing_message,
                     f"Sorry, {VERTEX_IMAGE_MODEL} couldn't {reply_text_part}. Please try again."
                 )
 
@@ -1634,18 +1735,25 @@ async def paintme_handler(
             image_data = await generate_image_with_gemini(prompt=image_prompt)
 
             if image_data:
-                image_io = BytesIO(image_data)
-                image_io.name = "gemini_paintme_image.jpg"
-                await update.effective_message.reply_photo(
-                    photo=image_io,
-                    caption=f'Here\'s your artistic representation!\nPrompt: "{image_prompt}"\nModel: Gemini',
-                )
-                await processing_message.delete()
+                async def _send_paintme_gemini() -> Message:
+                    image_io = BytesIO(image_data)
+                    image_io.name = "gemini_paintme_image.jpg"
+                    return await update.effective_message.reply_photo(
+                        photo=image_io,
+                        caption=(
+                            "Here's your artistic representation!\n"
+                            f'Prompt: "{image_prompt}"\nModel: Gemini'
+                        ),
+                    )
+
+                await _retry_telegram_call("reply_photo", _send_paintme_gemini)
+                await _delete_message_with_retry(processing_message)
             else:
                 logger.warning(
                     "{'portrait' if isPortrait else 'paint'}me_handler: Gemini image generation failed."
                 )
-                await processing_message.edit_text(
+                await _edit_text_with_retry(
+                    processing_message,
                     f"Sorry, Gemini couldn't {reply_text_part}. Please try again."
                 )
 
@@ -1676,7 +1784,8 @@ async def paintme_handler(
     except Exception as e:  # noqa: BLE001
         logger.error("Error in paintme_handler: %s", e, exc_info=True)
         try:
-            await processing_message.edit_text(
+            await _edit_text_with_retry(
+                processing_message,
                 f"Sorry, an unexpected error occurred while {'creating your portrait' if isPortrait else 'painting your picture'}: {str(e)}"
             )
         except Exception:  # noqa: BLE001
