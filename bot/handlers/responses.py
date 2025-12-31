@@ -1,13 +1,14 @@
 """Response helpers for TelegramGroupHelperBot."""
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import langid
 from pycountry import languages
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.error import BadRequest
+from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 from telegram.ext import ContextTypes
 
 from bot.config import TELEGRAM_MAX_LENGTH
@@ -16,6 +17,43 @@ from bot.db.database import queue_message_insert
 from .content import create_telegraph_page
 
 logger = logging.getLogger(__name__)
+
+
+async def _retry_edit_text(
+    message,
+    text: str,
+    *,
+    parse_mode: ParseMode | None = None,
+    retries: int = 2,
+    base_delay: float = 1.5,
+) -> None:
+    delay = base_delay
+    max_attempts = retries + 1
+    for attempt in range(1, max_attempts + 1):
+        try:
+            await message.edit_text(text, parse_mode=parse_mode)
+            return
+        except RetryAfter as exc:
+            wait_time = max(exc.retry_after, delay)
+            logger.warning(
+                "edit_text hit retry_after=%s; retrying in %.1fs (attempt %d/%d)",
+                exc.retry_after,
+                wait_time,
+                attempt,
+                max_attempts,
+            )
+            await asyncio.sleep(wait_time)
+        except (TimedOut, NetworkError) as exc:
+            if attempt >= max_attempts:
+                raise
+            logger.warning(
+                "edit_text network error on attempt %d/%d: %s",
+                attempt,
+                max_attempts,
+                exc,
+            )
+            await asyncio.sleep(delay)
+            delay *= 2
 
 
 async def send_response(
@@ -44,41 +82,47 @@ async def send_response(
         )
         telegraph_url = await create_telegraph_page(title, response)
         if telegraph_url:
-            await message.edit_text(
-                f"I have too much to say. [View it here]({telegraph_url})", 
-                parse_mode=ParseMode.MARKDOWN
+            await _retry_edit_text(
+                message,
+                f"I have too much to say. [View it here]({telegraph_url})",
+                parse_mode=ParseMode.MARKDOWN,
             )
         else:
             # Fallback: try to send as plain text
             try:
-                await message.edit_text(response)
+                await _retry_edit_text(message, response, parse_mode=None)
             except BadRequest:
                 # If still too long, truncate
-                await message.edit_text(
-                    f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
+                await _retry_edit_text(
+                    message,
+                    f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)",
+                    parse_mode=None,
                 )
     else:
         # Message is within limits, try to send with formatting
         try:
-            await message.edit_text(response, parse_mode=parse_mode)
+            await _retry_edit_text(message, response, parse_mode=parse_mode)
         except Exception as e:  # noqa: BLE001
             logger.warning("Failed to send response with formatting: %s", e)
             # If formatting fails, try to send as plain text
             try:
-                await message.edit_text(response)
+                await _retry_edit_text(message, response, parse_mode=None)
             except BadRequest as plain_e:
                 if "Message_too_long" in str(plain_e):
                     # Handle the case where the message is unexpectedly too long
                     telegraph_url = await create_telegraph_page(title, response)
                     if telegraph_url:
-                        await message.edit_text(
-                            f"The response is too long. [View it here]({telegraph_url})", 
-                            parse_mode=ParseMode.MARKDOWN
+                        await _retry_edit_text(
+                            message,
+                            f"The response is too long. [View it here]({telegraph_url})",
+                            parse_mode=ParseMode.MARKDOWN,
                         )
                     else:
                         # Last resort: truncate
-                        await message.edit_text(
-                            f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)"
+                        await _retry_edit_text(
+                            message,
+                            f"{response[:TELEGRAM_MAX_LENGTH - 100]}...\n\n(Response was truncated due to length)",
+                            parse_mode=None,
                         )
                 else:
                     logger.error(
@@ -86,8 +130,10 @@ async def send_response(
                         plain_e,
                         exc_info=True,
                     )
-                    await message.edit_text(
-                        "Error: Failed to format response. Please try again."
+                    await _retry_edit_text(
+                        message,
+                        "Error: Failed to format response. Please try again.",
+                        parse_mode=None,
                     )
 
 
